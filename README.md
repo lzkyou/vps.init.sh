@@ -7,7 +7,7 @@
 在测试 VPS 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<YOUR_USER>/<YOUR_REPO>/main/vps-init.sh -o vps-init.sh
+curl -fsSL https://raw.githubusercontent.com/lzkyou/vps.init.sh/main/vps-init.sh -o vps-init.sh
 bash -n vps-init.sh
 sudo bash vps-init.sh
 ```
