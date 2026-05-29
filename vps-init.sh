@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # VPS 小白友好初始化脚本
-# Version: 1.0.1
+# Version: 1.0.2
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -13,7 +13,7 @@
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -636,13 +636,14 @@ install_packages() {
 
 ensure_packages() {
   local needed
+  say "正在检查依赖：$*"
   needed="$(missing_packages "$@")"
   if [ -n "$needed" ]; then
     # shellcheck disable=SC2206
     local arr=($needed)
     install_packages "${arr[@]}"
   else
-    ok "所需依赖已安装，无需重复安装。"
+    say "✅ 所需依赖已安装，无需重复安装。"
   fi
 }
 
@@ -1497,7 +1498,9 @@ install_tool_tier() {
   fi
   print_preview "安装${name}工具" "$*" "无" "无" "无" "低内存机器会分批安装，失败后返回菜单" "可手动卸载包，脚本不自动卸载通用工具" "不影响 SSH 连接"
   confirm_action "是否安装${name}工具？" "yes" || return 0
+  say "开始检查/安装${name}工具..."
   if ensure_packages "$@"; then
+    ok "${name}工具检查/安装流程已完成。"
     add_report "已检查/安装${name}工具"
   fi
 }
