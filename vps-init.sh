@@ -1450,14 +1450,34 @@ set_timezone() {
   tz="${tz:-Asia/Shanghai}"
   print_preview "设置时区" "无" "/etc/localtime" "无" "systemd-timesync/cron 可能感知时间变化" "日志显示时间会变化" "可再次设置其他时区" "不影响 SSH 连接"
   confirm_action "是否设置时区为 $tz？" "yes" || return 0
-  if command_exists timedatectl; then
-    timedatectl set-timezone "$tz"
-  else
-    ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+  if [ ! -e "/usr/share/zoneinfo/$tz" ]; then
+    fail "时区文件不存在：/usr/share/zoneinfo/$tz"
+    say "你可以先查看可用时区，例如：ls /usr/share/zoneinfo/Asia"
+    return 1
   fi
-  set_state_value "TIMEZONE_MANAGED" "$tz"
-  ok "时区已设置为 $tz。"
-  add_report "已设置时区：$tz"
+  local timezone_ok=0
+  if command_exists timedatectl; then
+    if timedatectl set-timezone "$tz"; then
+      timezone_ok=1
+    else
+      warn "timedatectl 设置失败，可能是容器环境没有 systemd bus；将尝试直接更新 /etc/localtime。"
+    fi
+  fi
+  if [ "$timezone_ok" -eq 0 ]; then
+    backup_file /etc/localtime
+    if ln -sfn "/usr/share/zoneinfo/$tz" /etc/localtime; then
+      timezone_ok=1
+    fi
+  fi
+  if [ "$timezone_ok" -eq 1 ]; then
+    echo "$tz" >/etc/timezone 2>/dev/null || true
+    set_state_value "TIMEZONE_MANAGED" "$tz"
+    ok "时区已设置为 $tz。"
+    add_report "已设置时区：$tz"
+  else
+    fail "时区设置失败。"
+    return 1
+  fi
 }
 
 configure_chrony() {
