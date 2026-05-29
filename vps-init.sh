@@ -177,9 +177,9 @@ confirm_action() {
   local default="${2:-yes}"
   local hint
   if [ "$default" = "yes" ]; then
-    hint="【是 y / 否 n / 回车默认：是】"
+    hint="【是 y / 否 n / 0 返回 / 回车默认：是】"
   else
-    hint="【是 y / 否 n / 回车默认：否】"
+    hint="【是 y / 否 n / 0 返回 / 回车默认：否】"
   fi
   local ans
   while true; do
@@ -189,9 +189,10 @@ confirm_action() {
       [ "$default" = "yes" ] && return 0 || return 1
     fi
     case "$ans" in
+      0) warn "已返回上一级。"; return 1 ;;
       y|Y|yes|YES|Yes|yES|是) return 0 ;;
       n|N|no|NO|No|nO|否) return 1 ;;
-      *) say "请输入 y/yes/是 或 n/no/否；直接回车使用默认值。" ;;
+      *) say "请输入 y/yes/是、n/no/否，或 0 返回；直接回车使用默认值。" ;;
     esac
   done
 }
@@ -201,11 +202,12 @@ danger_confirm() {
   local ans
   say
   color_yellow "危险操作：$prompt"
-  say "如果你确认继续，请输入完整 yes 或 是。回车、y、Y 都不会继续。"
-  printf '请输入 yes 或 是: '
+  say "如果你确认继续，请输入完整 yes 或 是。输入 0 返回上一级；回车、y、Y 都不会继续。"
+  printf '请输入 yes / 是 / 0: '
   read -r ans || ans=""
   case "$ans" in
     yes|YES|Yes|yES|是) return 0 ;;
+    0) warn "已返回上一级。"; return 1 ;;
     *) warn "已取消危险操作。"; return 1 ;;
   esac
 }
@@ -623,11 +625,12 @@ validate_port() {
 
 select_target_user() {
   local default_user="${SUDO_USER:-root}"
-  say "请输入要配置的 Linux 用户名。"
+  say "请输入要配置的 Linux 用户名。输入 0 返回上一级。"
   say "默认：$default_user"
   printf '用户名: '
   local user
   read -r user || user=""
+  [ "$user" = "0" ] && return 1
   user="${user:-$default_user}"
   if ! id "$user" >/dev/null 2>&1; then
     fail "用户不存在：$user"
@@ -769,27 +772,47 @@ module_ssh_key() {
   show_system_brief
   say
   color_blue "配置 SSH Key 登录"
-  local user
-  user="$(select_target_user)" || { pause; return; }
-  local auth
-  auth="$(authorized_keys_path "$user")"
-  local key_count=0
-  [ -f "$auth" ] && key_count="$(grep -Ec '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$auth" 2>/dev/null || echo 0)"
-  say "目标用户：$user"
-  say "authorized_keys：$auth"
-  say "当前检测到 key 数量：$key_count"
+  say "这个功能会把 SSH 公钥写入服务器用户的 authorized_keys。"
+  say "之后你可以用对应私钥登录 VPS，后续再考虑关闭密码登录。"
+  say
+  say "推荐给小白的选择："
+  say "  1. 如果你已经有 id_ed25519.pub / id_rsa.pub，选 1 粘贴公钥。"
+  say "  2. 如果你完全不知道 SSH Key 是什么，选 2，由脚本临时生成并提示你保存私钥。"
+  say "     注意：更安全的做法仍然是在你自己的电脑本地生成 key。"
   say
   say "1. 更安全：粘贴本地生成的 .pub 公钥"
   say "2. 简单：脚本在 VPS 临时生成 keypair"
   say "3. 删除脚本添加的 SSH key"
   say "0. 返回"
   printf '请选择: '
-  local choice
+  local choice user auth key_count
   read -r choice || choice=""
   case "$choice" in
-    1) ssh_key_paste "$user" ;;
-    2) ssh_key_generate_on_vps "$user" ;;
+    1)
+      user="$(select_target_user)" || return 0
+      auth="$(authorized_keys_path "$user")"
+      key_count=0
+      [ -f "$auth" ] && key_count="$(grep -Ec '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$auth" 2>/dev/null || echo 0)"
+      say "目标用户：$user"
+      say "authorized_keys：$auth"
+      say "当前检测到 key 数量：$key_count"
+      say
+      ssh_key_paste "$user"
+      ;;
+    2)
+      user="$(select_target_user)" || return 0
+      auth="$(authorized_keys_path "$user")"
+      key_count=0
+      [ -f "$auth" ] && key_count="$(grep -Ec '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$auth" 2>/dev/null || echo 0)"
+      say "目标用户：$user"
+      say "authorized_keys：$auth"
+      say "当前检测到 key 数量：$key_count"
+      say
+      ssh_key_generate_on_vps "$user"
+      ;;
     3)
+      user="$(select_target_user)" || return 0
+      auth="$(authorized_keys_path "$user")"
       print_preview "删除脚本管理的 SSH key" "无" "$auth" "无" "无" "将删除 $SSH_KEY_BEGIN 与 $SSH_KEY_END 之间的 key" "不可自动恢复，除非你有原公钥" "不影响当前已建立 SSH 连接，但会影响后续 key 登录"
       if danger_confirm "删除脚本添加的 SSH key"; then
         remove_managed_key_block "$auth"
@@ -798,6 +821,8 @@ module_ssh_key() {
         add_report "已删除脚本管理的 SSH key"
       fi
       ;;
+    0) return 0 ;;
+    *) warn "无效选择。" ;;
   esac
   pause
 }
