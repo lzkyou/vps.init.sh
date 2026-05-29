@@ -1490,9 +1490,18 @@ module_system_init() {
 install_tool_tier() {
   local name="$1"
   shift
+  local requested_packages="$*"
+  local missing_before
+  missing_before="$(missing_packages "$@")"
   if [ "$MEM_TOTAL_MB" -lt 256 ] && [ "$name" != "最小" ]; then
     warn "当前是极低配机器（${MEM_TOTAL_MB}MB RAM），不推荐安装${name}工具。"
-    say "git/htop 等工具可能拉取较多依赖，apt 可能被 OOM 杀掉。"
+    say "本功能请求的工具列表：$requested_packages"
+    if [ -n "$missing_before" ]; then
+      say "当前尚未安装、将尝试拉取的包：$(printf '%s' "$missing_before" | xargs)"
+    else
+      say "当前检测这些工具都已安装，不需要拉取新包。"
+    fi
+    say "说明：git/htop/lsof 等工具可能拉取额外依赖，apt 可能被 OOM 杀掉。"
     say "建议优先安装最小工具，或先到 可选组件 -> Swap/Zram 创建 swap。"
     danger_confirm "仍然在极低内存机器上安装${name}工具" || return 0
   fi
