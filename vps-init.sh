@@ -745,14 +745,18 @@ ssh_key_generate_on_vps() {
   write_managed_key "$user" "$(cat "$key_file.pub")"
 
   say
-  color_yellow "私钥已保存在：$key_file"
-  say "请在当前终端执行下面命令查看并保存私钥到你的本地电脑："
-  say "  cat $key_file"
+  color_yellow "下面是你的 SSH 私钥，请现在完整复制保存到你的本地电脑。"
+  color_yellow "从 -----BEGIN OPENSSH PRIVATE KEY----- 到 -----END OPENSSH PRIVATE KEY----- 必须全部保存。"
+  say
+  cat "$key_file"
   say
   say "Windows 保存后建议在 PowerShell 执行："
   say '  icacls .\你的私钥文件 /inheritance:r'
   # shellcheck disable=SC2016
   say '  icacls .\你的私钥文件 /grant:r "$env:USERNAME:R"'
+  say
+  say "保存后，你可以这样连接："
+  say "  ssh -i 你的私钥文件 -p $(printf '%s' "$SSH_PORTS" | awk '{print $1}') $user@服务器IP"
   say
   if danger_confirm "我已经把私钥保存到本地，现在删除 VPS 上的临时私钥"; then
     if command_exists shred; then
@@ -761,8 +765,11 @@ ssh_key_generate_on_vps() {
       rm -f "$key_file" "$key_file.pub"
     fi
     ok "VPS 上的临时私钥已删除。"
+    say "说明：因为已经删除，所以 $key_file 现在不能再 cat，这是正常的。"
   else
-    warn "临时私钥仍保留在 $key_file。请尽快保存到本地并删除。"
+    warn "临时私钥仍保留在 $key_file。请尽快保存到本地并手动删除。"
+    say "你稍后仍可执行下面命令查看："
+    say "  cat $key_file"
   fi
 }
 
