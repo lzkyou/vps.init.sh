@@ -441,6 +441,7 @@ show_system_brief() {
   say "SSH：服务=$SSH_SERVICE 端口=[$SSH_PORTS] 密码登录=$SSH_PASSWORD_AUTH Root登录=$SSH_ROOT_LOGIN"
   say "防火墙：$FIREWALL_BACKEND | SELinux：$SELINUX_STATUS | 虚拟化：$VIRT_TYPE"
   [ "$SSH_MATCH_PRESENT" -eq 1 ] && warn "检测到 sshd_config 中存在 Match 块，最终策略可能因用户或来源 IP 不同。"
+  return 0
 }
 
 print_preview() {
@@ -983,6 +984,7 @@ rescue_prompt() {
   [ -n "$new_port" ] && say "新端口连接命令示例：ssh -p $new_port 用户名@服务器IP"
   say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台恢复 /etc/ssh/sshd_config.d/99-vps-init.conf。"
   say
+  return 0
 }
 
 module_ssh_hardening() {
@@ -1806,6 +1808,7 @@ print_summary_report() {
   say "状态文件：$STATE_FILE"
   say "建议：高风险 SSH 变更后，请先开新终端测试登录，再关闭当前终端。"
   say "=================================="
+  return 0
 }
 
 main_menu() {
