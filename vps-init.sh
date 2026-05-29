@@ -569,21 +569,65 @@ install_packages() {
         fi
         APT_UPDATED=1
       fi
-      if ! apt-get install -y --no-install-recommends "${packages[@]}"; then
-        fail "apt 安装依赖失败。"
-        return 1
+      if [ "$MEM_TOTAL_MB" -lt 512 ]; then
+        warn "低内存模式：将逐个安装包，降低 apt 被 OOM 杀掉的概率。"
+        local pkg
+        for pkg in "${packages[@]}"; do
+          if package_installed "$pkg"; then
+            continue
+          fi
+          say "正在安装：$pkg"
+          if ! apt-get install -y --no-install-recommends "$pkg"; then
+            fail "apt 安装 $pkg 失败。"
+            warn "这台机器内存很低，建议先创建 swap，或跳过 git/htop 等较重工具。"
+            return 1
+          fi
+        done
+      else
+        if ! apt-get install -y --no-install-recommends "${packages[@]}"; then
+          fail "apt 安装依赖失败。"
+          return 1
+        fi
       fi
       ;;
     dnf)
-      if ! dnf install -y --setopt=install_weak_deps=False "${packages[@]}"; then
-        fail "dnf 安装依赖失败。"
-        return 1
+      if [ "$MEM_TOTAL_MB" -lt 512 ]; then
+        warn "低内存模式：将逐个安装包。dnf 在低内存机器上仍可能失败。"
+        local pkg
+        for pkg in "${packages[@]}"; do
+          if package_installed "$pkg"; then
+            continue
+          fi
+          if ! dnf install -y --setopt=install_weak_deps=False "$pkg"; then
+            fail "dnf 安装 $pkg 失败。"
+            return 1
+          fi
+        done
+      else
+        if ! dnf install -y --setopt=install_weak_deps=False "${packages[@]}"; then
+          fail "dnf 安装依赖失败。"
+          return 1
+        fi
       fi
       ;;
     yum)
-      if ! yum install -y "${packages[@]}"; then
-        fail "yum 安装依赖失败。"
-        return 1
+      if [ "$MEM_TOTAL_MB" -lt 512 ]; then
+        warn "低内存模式：将逐个安装包。"
+        local pkg
+        for pkg in "${packages[@]}"; do
+          if package_installed "$pkg"; then
+            continue
+          fi
+          if ! yum install -y "$pkg"; then
+            fail "yum 安装 $pkg 失败。"
+            return 1
+          fi
+        done
+      else
+        if ! yum install -y "${packages[@]}"; then
+          fail "yum 安装依赖失败。"
+          return 1
+        fi
       fi
       ;;
   esac
@@ -1415,8 +1459,13 @@ module_system_init() {
   say
   color_blue "系统基础初始化"
   say "1. 安装最小工具"
-  say "2. 安装常用工具"
-  say "3. 安装诊断工具"
+  if [ "$MEM_TOTAL_MB" -lt 256 ]; then
+    say "2. 安装常用工具（极低配不推荐，建议先创建 swap）"
+    say "3. 安装诊断工具（极低配不推荐，建议先创建 swap）"
+  else
+    say "2. 安装常用工具"
+    say "3. 安装诊断工具"
+  fi
   say "4. 设置时区"
   say "5. 配置 chrony/NTP"
   say "6. 配置自动安全更新"
@@ -1438,6 +1487,12 @@ module_system_init() {
 install_tool_tier() {
   local name="$1"
   shift
+  if [ "$MEM_TOTAL_MB" -lt 256 ] && [ "$name" != "最小" ]; then
+    warn "当前是极低配机器（${MEM_TOTAL_MB}MB RAM），不推荐安装${name}工具。"
+    say "git/htop 等工具可能拉取较多依赖，apt 可能被 OOM 杀掉。"
+    say "建议优先安装最小工具，或先到 可选组件 -> Swap/Zram 创建 swap。"
+    danger_confirm "仍然在极低内存机器上安装${name}工具" || return 0
+  fi
   print_preview "安装${name}工具" "$*" "无" "无" "无" "低内存机器会分批安装，失败后返回菜单" "可手动卸载包，脚本不自动卸载通用工具" "不影响 SSH 连接"
   confirm_action "是否安装${name}工具？" "yes" || return 0
   ensure_packages "$@" && add_report "已安装${name}工具"
