@@ -1536,15 +1536,36 @@ set_timezone() {
 }
 
 configure_chrony() {
-  print_preview "配置 chrony/NTP" "chrony" "chrony 配置" "无" "chronyd/chrony" "时间同步有助于日志和证书有效性" "可手动禁用服务" "不影响 SSH 连接"
+  local chrony_impact="时间同步有助于日志和证书有效性"
+  if [ "$VIRT_TYPE" = "podman" ] || [ "$VIRT_TYPE" = "docker" ] || [ "$VIRT_TYPE" = "container" ]; then
+    chrony_impact="容器环境可能只允许安装 chrony，不允许启动时间同步服务"
+  fi
+  print_preview "配置 chrony/NTP" "chrony" "chrony 配置" "无" "chrony/chronyd" "$chrony_impact" "可手动禁用服务" "不影响 SSH 连接"
+  if [ "$VIRT_TYPE" = "podman" ] || [ "$VIRT_TYPE" = "docker" ] || [ "$VIRT_TYPE" = "container" ]; then
+    warn "检测到容器环境：chrony 可以安装，但服务可能被 policy-rc.d 或 systemd 限制禁止启动。"
+  fi
   confirm_action "是否安装并启用 chrony？" "yes" || return 0
   ensure_packages chrony || return 1
-  if systemctl list-unit-files chronyd.service >/dev/null 2>&1; then
-    enable_service chronyd
+  local service_name=""
+  if [ "$OS_FAMILY" = "debian" ]; then
+    service_name="chrony"
+  elif systemctl list-unit-files chronyd.service >/dev/null 2>&1; then
+    service_name="chronyd"
   else
-    enable_service chrony
+    service_name="chrony"
   fi
-  add_report "已配置 chrony/NTP"
+
+  if enable_service "$service_name"; then
+    ok "chrony/NTP 已安装并尝试启用：$service_name"
+    add_report "已配置 chrony/NTP"
+  else
+    warn "chrony 已安装，但服务未能启动/启用。"
+    warn "这在容器、NAT 小鸡或禁用 systemd 的环境中很常见，不一定是脚本错误。"
+    say "你可以稍后手动检查："
+    say "  systemctl status $service_name"
+    say "  service $service_name status"
+    add_report "已安装 chrony，但服务启动/启用失败"
+  fi
 }
 
 configure_auto_updates() {
