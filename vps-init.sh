@@ -1360,7 +1360,18 @@ module_bbr() {
   if ! printf '%s' "$available" | grep -qw bbr; then
     warn "当前内核可能不支持 BBR。OpenVZ/LXC 受限环境也可能无法修改。"
   fi
-  print_preview "启用 BBR" "无" "$BBR_FILE" "无" "sysctl --system" "NAT VPS 可尝试启用，但不承诺加速效果；受限内核失败不是脚本问题" "删除 $BBR_FILE 后可撤销" "不影响 SSH 连接"
+  if [ "$current" = "bbr" ]; then
+    ok "当前 TCP 拥塞控制算法已经是 bbr，无需重复启用。"
+    if [ -z "$qdisc" ]; then
+      warn "当前环境无法读取 net.core.default_qdisc，这在受限容器/NAT 小机里很常见。"
+    fi
+    if ! confirm_action "是否仍写入持久化 BBR 配置文件？" "no"; then
+      add_report "BBR 已启用，未重复写入配置"
+      pause
+      return 0
+    fi
+  fi
+  print_preview "启用 BBR" "无" "$BBR_FILE" "无" "sysctl -w BBR相关键" "NAT VPS 可尝试启用，但不承诺加速效果；受限内核失败不是脚本问题" "删除 $BBR_FILE 后可撤销" "不影响 SSH 连接"
   confirm_action "是否启用 BBR？" "yes" || { pause; return; }
   backup_file "$BBR_FILE"
   {
@@ -1368,12 +1379,31 @@ module_bbr() {
     echo "net.core.default_qdisc=fq"
     echo "net.ipv4.tcp_congestion_control=bbr"
   } >"$BBR_FILE"
-  if sysctl --system; then
+  local qdisc_ok=0
+  local cc_ok=0
+  if sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+    qdisc_ok=1
+  else
+    warn "无法设置 net.core.default_qdisc=fq，可能是容器/虚拟化限制。"
+  fi
+  if sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1; then
+    cc_ok=1
+  else
+    warn "无法设置 net.ipv4.tcp_congestion_control=bbr，可能是容器/虚拟化限制。"
+  fi
+  current="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+  if [ "$current" = "bbr" ]; then
     set_state_value "BBR_MANAGED" "1"
     ok "BBR 配置已应用。"
+    say "当前算法：$current"
+    say "当前 qdisc：${qdisc:-未知/无权限读取}"
+    [ "$qdisc_ok" -eq 0 ] && warn "qdisc 未成功设置，但当前算法已经是 bbr。"
     add_report "已启用 BBR 配置"
   else
-    fail "sysctl 应用失败，可能是虚拟化或内核限制。"
+    fail "BBR 未能启用，可能是虚拟化或内核限制。"
+    say "当前算法：${current:-未知}"
+    [ "$cc_ok" -eq 0 ] && warn "tcp_congestion_control 写入失败。"
   fi
   pause
 }
@@ -1766,10 +1796,9 @@ module_restore() {
       add_report "已撤销 fail2ban 脚本 jail"
       ;;
     4)
-      print_preview "删除 BBR 配置" "无" "$BBR_FILE" "无" "sysctl --system" "删除脚本 sysctl 文件" "不保证恢复到镜像原始 qdisc" "不影响 SSH"
+      print_preview "删除 BBR 配置" "无" "$BBR_FILE" "无" "无" "删除脚本 sysctl 文件；不全量重载 sysctl，避免受限容器刷屏报错" "不保证恢复到镜像原始 qdisc" "不影响 SSH"
       confirm_action "是否删除 BBR 配置？" "yes" || return 0
       rm -f "$BBR_FILE"
-      sysctl --system || true
       set_state_value "BBR_MANAGED" "0"
       add_report "已撤销 BBR 配置"
       ;;
