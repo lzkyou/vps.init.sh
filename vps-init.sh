@@ -216,13 +216,13 @@ read_nonempty() {
   local prompt="$1"
   local value
   while true; do
-    printf '%s' "$prompt"
+    printf '%s' "$prompt" >&2
     read -r value || value=""
     if [ -n "$value" ]; then
       printf '%s\n' "$value"
       return 0
     fi
-    say "输入不能为空，请重新输入。"
+    say "输入不能为空，请重新输入。" >&2
   done
 }
 
@@ -625,15 +625,15 @@ validate_port() {
 
 select_target_user() {
   local default_user="${SUDO_USER:-root}"
-  say "请输入要配置的 Linux 用户名。输入 0 返回上一级。"
-  say "默认：$default_user"
-  printf '用户名: '
+  say "请输入要配置的 Linux 用户名。输入 0 返回上一级。" >&2
+  say "默认：$default_user" >&2
+  printf '用户名: ' >&2
   local user
   read -r user || user=""
   [ "$user" = "0" ] && return 1
   user="${user:-$default_user}"
   if ! id "$user" >/dev/null 2>&1; then
-    fail "用户不存在：$user"
+    color_red "❌ 用户不存在：$user" >&2
     return 1
   fi
   printf '%s\n' "$user"
@@ -988,14 +988,15 @@ select_user_for_key_check() {
   local default_user
   default_user="$(load_state_value SSH_KEY_USER)"
   default_user="${default_user:-${SUDO_USER:-root}}"
-  say "关闭密码登录前，需要确认你将使用哪个 Linux 用户通过 SSH key 登录。"
-  say "默认：$default_user"
-  printf '用户名: '
+  say "关闭密码登录前，需要确认你将使用哪个 Linux 用户通过 SSH key 登录。" >&2
+  say "默认：$default_user" >&2
+  printf '用户名: ' >&2
   local user
   read -r user || user=""
+  [ "$user" = "0" ] && return 1
   user="${user:-$default_user}"
   if ! id "$user" >/dev/null 2>&1; then
-    fail "用户不存在：$user"
+    color_red "❌ 用户不存在：$user" >&2
     return 1
   fi
   printf '%s\n' "$user"
