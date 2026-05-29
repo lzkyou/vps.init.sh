@@ -12,6 +12,13 @@ bash -n vps-init.sh
 sudo bash vps-init.sh
 ```
 
+如果你怀疑 raw 缓存没有刷新，可以强制绕过缓存：
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/lzkyou/vps.init.sh/main/vps-init.sh?$(date +%s)" -o vps-init.sh
+grep 'SCRIPT_VERSION=' vps-init.sh
+```
+
 建议首次测试顺序：
 
 1. 查看当前配置状态

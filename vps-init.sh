@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # VPS 小白友好初始化脚本
-# Version: 1.0.0
+# Version: 1.0.1
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -13,7 +13,7 @@
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
