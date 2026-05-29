@@ -280,6 +280,7 @@ detect_os() {
   else
     HAS_SYSTEMD=0
   fi
+  return 0
 }
 
 detect_hardware() {
@@ -298,6 +299,7 @@ detect_hardware() {
   else
     VIRT_TYPE="unknown"
   fi
+  return 0
 }
 
 hardware_tier() {
@@ -337,6 +339,7 @@ detect_network() {
   local saved_nat
   saved_nat="$(load_state_value NAT_MODE)"
   [ "$saved_nat" = "1" ] && NAT_MODE=1
+  return 0
 }
 
 detect_selinux() {
@@ -351,6 +354,7 @@ detect_selinux() {
   else
     SELINUX_STATUS="disabled"
   fi
+  return 0
 }
 
 detect_ssh() {
@@ -393,6 +397,7 @@ detect_ssh() {
   if [ -r "$SSH_MAIN_CONFIG" ] && grep -Eiq '^[[:space:]]*Match[[:space:]]+' "$SSH_MAIN_CONFIG"; then
     SSH_MATCH_PRESENT=1
   fi
+  return 0
 }
 
 detect_firewall() {
@@ -406,6 +411,7 @@ detect_firewall() {
   elif command_exists iptables; then
     FIREWALL_BACKEND="iptables"
   fi
+  return 0
 }
 
 refresh_detection() {
@@ -415,6 +421,7 @@ refresh_detection() {
   detect_selinux
   detect_ssh
   detect_firewall
+  return 0
 }
 
 print_header() {
