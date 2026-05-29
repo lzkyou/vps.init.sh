@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # VPS 小白友好初始化脚本
-# Version: 1.0.2
+# Version: 1.0.3
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -13,7 +13,7 @@
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.0.3"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -992,26 +992,123 @@ open_firewall_port() {
   local port="$1"
   local proto="${2:-tcp}"
   local note="${3:-vps-init}"
-  detect_firewall
+  local ipver="${4:-both}"
+  ensure_firewall_backend "放行端口 ${port}/${proto}" || return 1
   case "$FIREWALL_BACKEND" in
     ufw)
       ensure_packages ufw || return 1
-      ufw allow "${port}/${proto}" comment "$note"
-      append_state_list "FIREWALL_RULES" "${port}/${proto}"
+      case "$ipver" in
+        ipv4) ufw allow proto "$proto" to 0.0.0.0/0 port "$port" comment "$note" ;;
+        ipv6) ufw allow proto "$proto" to ::/0 port "$port" comment "$note" ;;
+        *) ufw allow "${port}/${proto}" comment "$note" ;;
+      esac
+      append_state_list "FIREWALL_RULES" "${port}/${proto}/${ipver}"
       ;;
     firewalld)
       ensure_packages firewalld || return 1
-      enable_service firewalld || true
+      if ! enable_service firewalld; then
+        warn "firewalld 无法启动，可能是容器或服务商环境限制；规则暂不能生效。"
+        return 1
+      fi
       firewall-cmd --permanent --add-port="${port}/${proto}"
       firewall-cmd --add-port="${port}/${proto}" || true
-      append_state_list "FIREWALL_RULES" "${port}/${proto}"
-      ;;
-    *)
-      warn "未检测到可自动管理的防火墙后端，跳过端口放行。"
-      return 1
+      append_state_list "FIREWALL_RULES" "${port}/${proto}/${ipver}"
       ;;
   esac
   ok "已尝试放行端口 ${port}/${proto}。"
+}
+
+preferred_firewall_backend() {
+  if [ "$OS_FAMILY" = "rhel" ]; then
+    echo "firewalld"
+  else
+    echo "ufw"
+  fi
+}
+
+ensure_firewall_backend() {
+  local purpose="${1:-管理防火墙规则}"
+  detect_firewall
+  case "$FIREWALL_BACKEND" in
+    ufw|firewalld)
+      return 0
+      ;;
+    nftables|iptables)
+      warn "检测到低层防火墙工具 $FIREWALL_BACKEND，但本脚本 v1 不直接改写低层规则。"
+      ;;
+    none)
+      warn "未检测到 UFW/firewalld，本机目前没有脚本可自动管理的防火墙后端。"
+      ;;
+  esac
+
+  local backend pkg
+  backend="$(preferred_firewall_backend)"
+  pkg="$backend"
+  say
+  say "为了${purpose}，脚本建议安装：$backend"
+  if [ "$NAT_MODE" -eq 1 ]; then
+    say "NAT 提醒：这里管理的是 VPS 内部端口；公网外部端口仍需要在服务商 NAT 面板映射。"
+  fi
+  say "如果本机没有防火墙，端口在 VPS 内部通常不需要额外放行；能否公网访问主要取决于服务是否监听和 NAT/安全组是否映射。"
+  say "安装 $backend 的意义是增加一层本机端口过滤；不安装也不是脚本错误。"
+  if [ "$MEM_TOTAL_MB" -lt 256 ]; then
+    warn "当前是极低配机器（${MEM_TOTAL_MB}MB RAM），安装并启用防火墙服务可能增加内存占用。"
+    danger_confirm "在极低内存机器上安装 $backend 防火墙组件" || return 1
+  else
+    confirm_action "是否安装 $backend 作为本机防火墙后端？" "yes" || return 1
+  fi
+
+  ensure_packages "$pkg" || return 1
+  detect_firewall
+  case "$FIREWALL_BACKEND" in
+    ufw|firewalld)
+      ok "已检测到可管理防火墙后端：$FIREWALL_BACKEND"
+      ;;
+    *)
+      fail "安装后仍未检测到 UFW/firewalld，无法继续自动配置防火墙。"
+      return 1
+      ;;
+  esac
+}
+
+firewall_is_active() {
+  case "$FIREWALL_BACKEND" in
+    ufw)
+      ufw status 2>/dev/null | grep -qi 'Status: active'
+      ;;
+    firewalld)
+      firewall-cmd --state 2>/dev/null | grep -qi '^running$'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+maybe_enable_firewall_after_rules() {
+  detect_firewall
+  case "$FIREWALL_BACKEND" in
+    ufw|firewalld) ;;
+    *) return 0 ;;
+  esac
+  if firewall_is_active; then
+    return 0
+  fi
+  warn "规则已写入，但当前防火墙尚未启用；未启用时规则不会真正拦截流量。"
+  say "启用前脚本会先确保当前 SSH 内部端口已放行：$SSH_PORTS/tcp"
+  danger_confirm "立即启用本机防火墙" || return 0
+  local p
+  for p in $SSH_PORTS; do
+    open_firewall_port "$p" tcp "vps-init ssh" both || true
+  done
+  case "$FIREWALL_BACKEND" in
+    ufw)
+      ufw --force enable
+      ;;
+    firewalld)
+      enable_service firewalld
+      ;;
+  esac
 }
 
 has_non_root_sudo_user() {
@@ -1333,14 +1430,14 @@ module_firewall() {
 }
 
 firewall_enable_ssh() {
-  local pkg="ufw"
-  [ "$OS_FAMILY" = "rhel" ] && pkg="firewalld"
+  local pkg
+  pkg="$(preferred_firewall_backend)"
   print_preview "启用防火墙并放行 SSH" "$pkg" "防火墙规则" "$SSH_PORTS/tcp" "$pkg" "请确认云安全组或 NAT 面板也放行了对应端口" "脚本记录的端口规则可尝试撤销" "若 SSH 端口未放行，可能导致新连接失败"
   danger_confirm "启用本机防火墙" || return 0
-  ensure_packages "$pkg" || return 1
+  ensure_firewall_backend "启用防火墙并放行 SSH" || return 1
   local p
   for p in $SSH_PORTS; do
-    open_firewall_port "$p" tcp "vps-init ssh" || true
+    open_firewall_port "$p" tcp "vps-init ssh" both || true
   done
   case "$FIREWALL_BACKEND" in
     ufw)
@@ -1372,12 +1469,14 @@ firewall_custom_rule() {
   note="${note:-vps-init custom}"
   print_preview "放行自定义端口" "防火墙后端依赖包" "防火墙规则" "$port/$proto ($ipver)" "防火墙服务" "NAT 场景还需服务商面板映射公网端口" "脚本记录的规则可尝试撤销" "不影响当前 SSH，除非规则误操作"
   confirm_action "是否放行该端口？" "yes" || return 0
+  ensure_firewall_backend "放行自定义端口 $port/$proto" || return 1
   local protocols=("$proto")
   [ "$proto" = "both" ] && protocols=(tcp udp)
   local pr
   for pr in "${protocols[@]}"; do
-    open_firewall_port "$port" "$pr" "$note" || true
+    open_firewall_port "$port" "$pr" "$note" "$ipver" || true
   done
+  maybe_enable_firewall_after_rules
   add_report "已放行自定义端口：$port/$proto"
 }
 
@@ -1939,15 +2038,17 @@ restore_firewall_rules() {
   fi
   print_preview "删除脚本记录的防火墙规则" "无" "防火墙规则" "$rules" "防火墙服务" "只尝试删除状态文件记录的规则" "可能需要手动检查" "误删 SSH 规则可能影响新连接"
   danger_confirm "删除脚本记录的防火墙规则" || return 0
-  local rule port proto
+  local rule port proto ipver remove_rule
   for rule in $rules; do
-    port="${rule%/*}"
-    proto="${rule#*/}"
+    IFS=/ read -r port proto ipver <<EOF
+$rule
+EOF
+    remove_rule="${port}/${proto}"
     case "$FIREWALL_BACKEND" in
-      ufw) ufw --force delete allow "$rule" || true ;;
+      ufw) ufw --force delete allow "$remove_rule" || true ;;
       firewalld)
-        firewall-cmd --permanent --remove-port="$rule" || true
-        firewall-cmd --remove-port="$rule" || true
+        firewall-cmd --permanent --remove-port="$remove_rule" || true
+        firewall-cmd --remove-port="$remove_rule" || true
         ;;
       *) warn "当前防火墙后端 $FIREWALL_BACKEND 无自动删除实现。" ;;
     esac
