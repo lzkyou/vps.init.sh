@@ -1,7 +1,26 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# shellcheck shell=bash
+if [ -z "${BASH_VERSION:-}" ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "当前系统未安装 bash，而本脚本主体需要 bash。"
+  if [ "$(id -u 2>/dev/null || echo 1)" = "0" ] && command -v apk >/dev/null 2>&1; then
+    echo "检测到 Alpine/apk。可以现在自动安装 bash，然后继续运行脚本。"
+    printf '是否安装 bash？【是 y / 否 n / 回车默认：是】: '
+    read -r ans || ans=""
+    case "$ans" in
+      ""|y|Y|yes|YES|Yes|yES|是)
+        apk add --no-cache bash && exec bash "$0" "$@"
+        ;;
+    esac
+  fi
+  echo "请先安装 bash 后再运行，例如 Alpine root 下执行：apk add --no-cache bash && bash vps-init.sh"
+  exit 1
+fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.0.3
+# Version: 1.1.1
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -13,7 +32,7 @@
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.0.3"
+SCRIPT_VERSION="1.1.1"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -58,6 +77,7 @@ SSH_PASSWORD_AUTH="unknown"
 SSH_ROOT_LOGIN="unknown"
 SSH_MATCH_PRESENT=0
 APT_UPDATED=0
+APK_UPDATED=0
 RUN_REPORT=()
 
 color_red() { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -76,7 +96,8 @@ log() {
   shift || true
   local msg="$*"
   mkdir -p "$STATE_DIR" "$BACKUP_DIR" 2>/dev/null || true
-  if [ -w "$(dirname "$LOG_FILE")" ] || touch "$LOG_FILE" 2>/dev/null; then
+  local log_dir="${LOG_FILE%/*}"
+  if [ -w "$log_dir" ] || touch "$LOG_FILE" 2>/dev/null; then
     printf '[%s] [%s] %s\n' "$(date '+%F %T')" "$level" "$msg" >>"$LOG_FILE" 2>/dev/null || true
   fi
 }
@@ -96,7 +117,12 @@ require_root() {
     fail "请使用 root 权限运行本脚本。"
     say
     say "请执行："
-    say "  sudo bash vps-init.sh"
+    if command_exists apk; then
+      say "  su -"
+      say "  sh vps-init.sh"
+    else
+      say "  sudo bash vps-init.sh"
+    fi
     exit 1
   fi
 }
@@ -259,11 +285,14 @@ detect_os() {
   case "$OS_ID" in
     debian|ubuntu) OS_FAMILY="debian" ;;
     rhel|centos|rocky|almalinux|fedora|ol) OS_FAMILY="rhel" ;;
+    alpine) OS_FAMILY="alpine" ;;
     *) OS_FAMILY="unknown" ;;
   esac
 
   if command_exists apt-get; then
     PKG_MANAGER="apt"
+  elif command_exists apk; then
+    PKG_MANAGER="apk"
   elif command_exists dnf; then
     PKG_MANAGER="dnf"
   elif command_exists yum; then
@@ -285,6 +314,14 @@ detect_os() {
     HAS_SYSTEMD=0
   fi
   return 0
+}
+
+is_alpine_supported_version() {
+  [ "$OS_FAMILY" = "alpine" ] || return 1
+  case "$OS_VERSION_ID" in
+    3.21*|3.22*|3.23*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 detect_hardware() {
@@ -319,8 +356,11 @@ hardware_tier() {
 }
 
 detect_network() {
-  DEFAULT_IPV4="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
-  if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+  DEFAULT_IPV4=""
+  if command_exists ip; then
+    DEFAULT_IPV4="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
+  fi
+  if command_exists ip && ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
     IPV6_AVAILABLE=1
   else
     IPV6_AVAILABLE=0
@@ -330,7 +370,7 @@ detect_network() {
   if command_exists curl; then
     PUBLIC_IPV4="$(curl -4 -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)"
   elif command_exists wget; then
-    PUBLIC_IPV4="$(wget -4 -qO- --timeout=3 https://api.ipify.org 2>/dev/null || true)"
+    PUBLIC_IPV4="$(wget -q -O - -T 3 https://api.ipify.org 2>/dev/null || true)"
   fi
 
   NAT_MODE=0
@@ -471,7 +511,7 @@ print_preview() {
 
 network_precheck() {
   local bad=0
-  if ! getent hosts deb.debian.org >/dev/null 2>&1 && ! getent hosts mirrors.rockylinux.org >/dev/null 2>&1 && ! getent hosts google.com >/dev/null 2>&1; then
+  if ! getent hosts deb.debian.org >/dev/null 2>&1 && ! getent hosts mirrors.rockylinux.org >/dev/null 2>&1 && ! getent hosts dl-cdn.alpinelinux.org >/dev/null 2>&1 && ! getent hosts google.com >/dev/null 2>&1; then
     warn "DNS 解析可能不可用，安装包可能失败。"
     bad=1
   fi
@@ -490,6 +530,7 @@ package_installed() {
   local pkg="$1"
   case "$PKG_MANAGER" in
     apt) dpkg -s "$pkg" >/dev/null 2>&1 ;;
+    apk) apk info -e "$pkg" >/dev/null 2>&1 ;;
     dnf|yum) rpm -q "$pkg" >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
@@ -500,16 +541,22 @@ map_package() {
   case "$OS_FAMILY:$pkg" in
     debian:openssh-server) echo "openssh-server" ;;
     rhel:openssh-server) echo "openssh-server" ;;
+    alpine:openssh-server) echo "openssh" ;;
     debian:cron) echo "cron" ;;
     rhel:cron) echo "cronie" ;;
+    alpine:cron) echo "cronie" ;;
     debian:dnsutils) echo "dnsutils" ;;
     rhel:dnsutils) echo "bind-utils" ;;
+    alpine:dnsutils) echo "bind-tools" ;;
     debian:net-tools) echo "net-tools" ;;
     rhel:net-tools) echo "net-tools" ;;
+    alpine:net-tools) echo "net-tools" ;;
     debian:policycoreutils-python-utils) echo "policycoreutils-python-utils" ;;
     rhel:policycoreutils-python-utils) echo "policycoreutils-python-utils" ;;
+    alpine:policycoreutils-python-utils) echo "" ;;
     debian:unattended-upgrades) echo "unattended-upgrades" ;;
     rhel:unattended-upgrades) echo "dnf-automatic" ;;
+    alpine:unattended-upgrades) echo "" ;;
     *) echo "$pkg" ;;
   esac
 }
@@ -531,6 +578,7 @@ package_manager_busy() {
   pgrep -x apt >/dev/null 2>&1 && return 0
   pgrep -x apt-get >/dev/null 2>&1 && return 0
   pgrep -x dpkg >/dev/null 2>&1 && return 0
+  pgrep -x apk >/dev/null 2>&1 && return 0
   pgrep -x dnf >/dev/null 2>&1 && return 0
   pgrep -x yum >/dev/null 2>&1 && return 0
   return 1
@@ -586,6 +634,38 @@ install_packages() {
       else
         if ! apt-get install -y --no-install-recommends "${packages[@]}"; then
           fail "apt 安装依赖失败。"
+          return 1
+        fi
+      fi
+      ;;
+    apk)
+      if [ "$APK_UPDATED" -eq 0 ]; then
+        info "正在更新 apk 软件源索引..."
+        if ! apk update; then
+          fail "apk update 失败。"
+          warn "如果提示 package not found，请检查 /etc/apk/repositories 是否启用了 main/community。"
+          return 1
+        fi
+        APK_UPDATED=1
+      fi
+      if [ "$MEM_TOTAL_MB" -lt 512 ]; then
+        warn "低内存模式：将逐个安装包，降低 apk 拉取依赖时的内存压力。"
+        local pkg
+        for pkg in "${packages[@]}"; do
+          if package_installed "$pkg"; then
+            continue
+          fi
+          say "正在安装：$pkg"
+          if ! apk add --no-cache "$pkg"; then
+            fail "apk 安装 $pkg 失败。"
+            warn "Alpine 上某些包可能需要启用 community 仓库，或当前小机内存/磁盘不足。"
+            return 1
+          fi
+        done
+      else
+        if ! apk add --no-cache "${packages[@]}"; then
+          fail "apk 安装依赖失败。"
+          warn "如果提示 package not found，请检查 /etc/apk/repositories 是否启用了 main/community。"
           return 1
         fi
       fi
@@ -651,6 +731,8 @@ restart_service() {
   local svc="$1"
   if [ "$HAS_SYSTEMD" -eq 1 ]; then
     systemctl restart "$svc"
+  elif command_exists rc-service; then
+    rc-service "$svc" restart
   else
     service "$svc" restart
   fi
@@ -660,6 +742,9 @@ enable_service() {
   local svc="$1"
   if [ "$HAS_SYSTEMD" -eq 1 ]; then
     systemctl enable --now "$svc"
+  elif command_exists rc-service; then
+    rc-update add "$svc" default >/dev/null 2>&1 || true
+    rc-service "$svc" start
   else
     service "$svc" start
   fi
@@ -947,6 +1032,9 @@ validate_sshd_config() {
     fail "找不到 sshd 命令，无法校验 SSH 配置。"
     return 1
   fi
+  if command_exists ssh-keygen; then
+    ssh-keygen -A >/dev/null 2>&1 || true
+  fi
   if ! sshd -t; then
     fail "sshd -t 校验失败。不会重启 SSH。"
     return 1
@@ -1049,6 +1137,9 @@ ensure_firewall_backend() {
   if [ "$NAT_MODE" -eq 1 ]; then
     say "NAT 提醒：这里管理的是 VPS 内部端口；公网外部端口仍需要在服务商 NAT 面板映射。"
   fi
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    warn "Alpine 上 ufw 通常来自 community 仓库；如果 apk 提示找不到包，请检查 /etc/apk/repositories。"
+  fi
   say "如果本机没有防火墙，端口在 VPS 内部通常不需要额外放行；能否公网访问主要取决于服务是否监听和 NAT/安全组是否映射。"
   say "安装 $backend 的意义是增加一层本机端口过滤；不安装也不是脚本错误。"
   if [ "$MEM_TOTAL_MB" -lt 256 ]; then
@@ -1104,6 +1195,10 @@ maybe_enable_firewall_after_rules() {
   case "$FIREWALL_BACKEND" in
     ufw)
       ufw --force enable
+      if command_exists rc-service && [ -x /etc/init.d/ufw ]; then
+        rc-update add ufw default >/dev/null 2>&1 || true
+        rc-service ufw start >/dev/null 2>&1 || true
+      fi
       ;;
     firewalld)
       enable_service firewalld
@@ -1380,6 +1475,9 @@ module_fail2ban() {
   fi
   if [ "$HAS_SYSTEMD" -eq 1 ]; then backend="systemd"; else backend="auto"; fi
   print_preview "配置 fail2ban SSH jail" "fail2ban" "$F2B_FILE" "无" "fail2ban" "只启用 SSH jail；监听内部端口 [$SSH_PORTS]；ignoreip=${ignoreip:-无}" "可删除 $F2B_FILE 撤销" "不影响当前 SSH 连接，但误配置可能误封来源 IP"
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    warn "Alpine/OpenRC 通常没有 systemd journal；fail2ban 需要 syslog 正常写入 /var/log/auth.log 或 /var/log/messages。"
+  fi
   confirm_action "是否安装并配置 fail2ban？" "yes" || { pause; return; }
   ensure_packages fail2ban || { pause; return; }
   mkdir -p "$(dirname "$F2B_FILE")"
@@ -1390,6 +1488,7 @@ module_fail2ban() {
     echo "enabled = true"
     echo "backend = $backend"
     echo "port = $SSH_PORTS"
+    [ "$OS_FAMILY" = "alpine" ] && echo "logpath = /var/log/auth.log /var/log/messages"
     echo "maxretry = $maxretry"
     echo "bantime = $bantime"
     echo "findtime = $findtime"
@@ -1442,6 +1541,10 @@ firewall_enable_ssh() {
   case "$FIREWALL_BACKEND" in
     ufw)
       ufw --force enable
+      if command_exists rc-service && [ -x /etc/init.d/ufw ]; then
+        rc-update add ufw default >/dev/null 2>&1 || true
+        rc-service ufw start >/dev/null 2>&1 || true
+      fi
       ;;
     firewalld)
       enable_service firewalld
@@ -1586,30 +1689,150 @@ module_system_init() {
   pause
 }
 
+tool_package_desc() {
+  local pkg="$1"
+  case "$pkg" in
+    ca-certificates) echo "HTTPS 证书基础包，curl/wget/git 访问 HTTPS 常依赖它" ;;
+    curl) echo "常用下载和接口测试工具；已有 wget 时不是必须" ;;
+    wget) echo "下载工具；很多 Alpine 已带 busybox wget，通常可选" ;;
+    sudo) echo "允许普通用户临时执行管理员命令；创建 sudo 用户时需要" ;;
+    nano) echo "简单文本编辑器，适合新手临时改配置" ;;
+    vim) echo "进阶文本编辑器，体积和学习成本更高；新手通常不必装" ;;
+    git) echo "代码仓库工具，依赖较多；只下载脚本时不需要" ;;
+    unzip) echo "解压 .zip 文件，体积较小" ;;
+    tar) echo "解压 .tar/.tar.gz 文件；多数系统已自带可用 tar" ;;
+    htop) echo "交互式资源查看器，方便但低内存机器不必装" ;;
+    lsof) echo "查看端口/文件占用，排查服务监听很有用" ;;
+    net-tools) echo "传统 ifconfig/netstat 工具；现代系统通常用 ip/ss 替代" ;;
+    dnsutils) echo "DNS 诊断工具；Debian 为 dnsutils，RHEL 为 bind-utils，Alpine 为 bind-tools" ;;
+    *) echo "通用工具包" ;;
+  esac
+}
+
+tool_package_command() {
+  local pkg="$1"
+  case "$pkg" in
+    ca-certificates) echo "" ;;
+    dnsutils) echo "dig" ;;
+    net-tools) echo "netstat" ;;
+    openssh-server) echo "sshd" ;;
+    *) echo "$pkg" ;;
+  esac
+}
+
+tool_package_default() {
+  local tier="$1"
+  local pkg="$2"
+  local cmd
+  cmd="$(tool_package_command "$pkg")"
+  if [ -n "$cmd" ] && command_exists "$cmd"; then
+    echo "no"
+    return 0
+  fi
+  case "$tier:$pkg" in
+    最小:ca-certificates|最小:curl|最小:sudo) echo "yes" ;;
+    最小:wget) echo "no" ;;
+    常用:nano|常用:unzip) echo "yes" ;;
+    常用:vim|常用:git|常用:tar|常用:htop) echo "no" ;;
+    诊断:lsof|诊断:dnsutils) echo "yes" ;;
+    诊断:net-tools) echo "no" ;;
+    *) echo "no" ;;
+  esac
+}
+
+confirm_package_choice() {
+  local pkg="$1"
+  local default="$2"
+  local desc="$3"
+  local mapped cmd installed_hint hint ans
+  mapped="$(map_package "$pkg")"
+  cmd="$(tool_package_command "$pkg")"
+  installed_hint="未检测到"
+  if [ -n "$cmd" ] && command_exists "$cmd"; then
+    installed_hint="已检测到命令：$cmd"
+  elif [ -n "$mapped" ] && package_installed "$mapped"; then
+    installed_hint="已安装包：$mapped"
+  fi
+  if [ "$default" = "yes" ]; then
+    hint="【是 y / 否 n / 0 返回 / 回车默认：是】"
+  else
+    hint="【是 y / 否 n / 0 返回 / 回车默认：否】"
+  fi
+  while true; do
+    say "  - $pkg -> ${mapped:-不适用}" >&2
+    say "    用途：$desc" >&2
+    say "    状态：$installed_hint" >&2
+    printf '    是否选择安装 %s？%s: ' "$pkg" "$hint" >&2
+    read -r ans || ans=""
+    if [ -z "$ans" ]; then
+      [ "$default" = "yes" ] && return 0 || return 1
+    fi
+    case "$ans" in
+      0) return 2 ;;
+      y|Y|yes|YES|Yes|yES|是) return 0 ;;
+      n|N|no|NO|No|nO|否) return 1 ;;
+      *) say "    请输入 y/yes/是、n/no/否，或 0 返回；直接回车使用默认值。" >&2 ;;
+    esac
+  done
+}
+
+select_tool_packages() {
+  local tier="$1"
+  shift
+  local selected=()
+  local pkg default desc rc
+  say "请选择要安装的${tier}工具。回车采用每项推荐默认值，输入 0 返回上一级。" >&2
+  say "建议：低配/NAT 小机先少装，真正需要时再回来补装。" >&2
+  say >&2
+  for pkg in "$@"; do
+    default="$(tool_package_default "$tier" "$pkg")"
+    desc="$(tool_package_desc "$pkg")"
+    confirm_package_choice "$pkg" "$default" "$desc"
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+      warn "已返回上一级。" >&2
+      return 1
+    elif [ "$rc" -eq 0 ]; then
+      selected+=("$pkg")
+    fi
+    say >&2
+  done
+  if [ "${#selected[@]}" -eq 0 ]; then
+    warn "未选择任何工具包，本次不安装。" >&2
+    return 1
+  fi
+  printf '%s\n' "${selected[@]}"
+}
+
 install_tool_tier() {
   local name="$1"
   shift
   local requested_packages="$*"
   local missing_before
-  missing_before="$(missing_packages "$@")"
+  local selected_packages
+  selected_packages="$(select_tool_packages "$name" "$@")" || return 0
+  # shellcheck disable=SC2206
+  local selected_arr=($selected_packages)
+  missing_before="$(missing_packages "${selected_arr[@]}")"
   if [ "$MEM_TOTAL_MB" -lt 256 ] && [ "$name" != "最小" ]; then
     warn "当前是极低配机器（${MEM_TOTAL_MB}MB RAM），不推荐安装${name}工具。"
     say "本功能请求的工具列表：$requested_packages"
+    say "你当前选择的工具列表：${selected_arr[*]}"
     if [ -n "$missing_before" ]; then
       say "当前尚未安装、将尝试拉取的包：$(printf '%s' "$missing_before" | xargs)"
     else
       say "当前检测这些工具都已安装，不需要拉取新包。"
     fi
-    say "说明：git/htop/lsof 等工具可能拉取额外依赖，apt 可能被 OOM 杀掉。"
+    say "说明：git/htop/lsof 等工具可能拉取额外依赖，包管理器可能被 OOM 杀掉。"
     say "建议优先安装最小工具，或先到 可选组件 -> Swap/Zram 创建 swap。"
     danger_confirm "仍然在极低内存机器上安装${name}工具" || return 0
   fi
-  print_preview "安装${name}工具" "$*" "无" "无" "无" "低内存机器会分批安装，失败后返回菜单" "可手动卸载包，脚本不自动卸载通用工具" "不影响 SSH 连接"
+  print_preview "安装${name}工具" "${selected_arr[*]}" "无" "无" "无" "低内存机器会分批安装，失败后返回菜单；未选择的工具不会安装" "可手动卸载包，脚本不自动卸载通用工具" "不影响 SSH 连接"
   confirm_action "是否安装${name}工具？" "yes" || return 0
   say "开始检查/安装${name}工具..."
-  if ensure_packages "$@"; then
+  if ensure_packages "${selected_arr[@]}"; then
     ok "${name}工具检查/安装流程已完成。"
-    add_report "已检查/安装${name}工具"
+    add_report "已检查/安装${name}工具：${selected_arr[*]}"
   fi
 }
 
@@ -1618,8 +1841,13 @@ set_timezone() {
   printf '请输入时区 [默认 Asia/Shanghai]: '
   read -r tz || tz=""
   tz="${tz:-Asia/Shanghai}"
-  print_preview "设置时区" "无" "/etc/localtime" "无" "systemd-timesync/cron 可能感知时间变化" "日志显示时间会变化" "可再次设置其他时区" "不影响 SSH 连接"
+  local tz_pkg="无"
+  [ "$OS_FAMILY" = "alpine" ] && tz_pkg="tzdata"
+  print_preview "设置时区" "$tz_pkg" "/etc/localtime" "无" "systemd-timesync/cron 可能感知时间变化" "日志显示时间会变化" "可再次设置其他时区" "不影响 SSH 连接"
   confirm_action "是否设置时区为 $tz？" "yes" || return 0
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    ensure_packages tzdata || return 1
+  fi
   if [ ! -e "/usr/share/zoneinfo/$tz" ]; then
     fail "时区文件不存在：/usr/share/zoneinfo/$tz"
     say "你可以先查看可用时区，例如：ls /usr/share/zoneinfo/Asia"
@@ -1664,7 +1892,9 @@ configure_chrony() {
   local service_name=""
   if [ "$OS_FAMILY" = "debian" ]; then
     service_name="chrony"
-  elif systemctl list-unit-files chronyd.service >/dev/null 2>&1; then
+  elif [ "$OS_FAMILY" = "alpine" ]; then
+    service_name="chronyd"
+  elif [ "$HAS_SYSTEMD" -eq 1 ] && systemctl list-unit-files chronyd.service >/dev/null 2>&1; then
     service_name="chronyd"
   else
     service_name="chrony"
@@ -1677,13 +1907,27 @@ configure_chrony() {
     warn "chrony 已安装，但服务未能启动/启用。"
     warn "这在容器、NAT 小鸡或禁用 systemd 的环境中很常见，不一定是脚本错误。"
     say "你可以稍后手动检查："
-    say "  systemctl status $service_name"
-    say "  service $service_name status"
+    if command_exists rc-service; then
+      say "  rc-service $service_name status"
+    elif [ "$HAS_SYSTEMD" -eq 1 ]; then
+      say "  systemctl status $service_name"
+    else
+      say "  service $service_name status"
+    fi
     add_report "已安装 chrony，但服务启动/启用失败"
   fi
 }
 
 configure_auto_updates() {
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    print_preview "配置自动安全更新" "无" "无" "无" "无" "Alpine 没有脚本当前可安全托管的 unattended-upgrades/dnf-automatic 等价流程" "未执行系统修改" "不影响 SSH 连接"
+    warn "Alpine 自动安全更新需要结合 apk、定时任务、重启策略自行设计；本脚本暂不自动配置，避免低配 NAT 小机后台升级导致服务异常。"
+    say "建议手动维护："
+    say "  apk update"
+    say "  apk upgrade"
+    add_report "已跳过 Alpine 自动安全更新配置"
+    return 0
+  fi
   if [ "$MEM_TOTAL_MB" -lt 512 ]; then
     warn "当前内存低于 512MB，不推荐启用自动安全更新。"
     danger_confirm "低内存环境启用自动安全更新" || return 0
@@ -1754,7 +1998,11 @@ optional_docker() {
   if confirm_action "是否将某个 sudo 用户加入 docker 组？" "no"; then
     local user
     user="$(select_target_user)" || return 1
-    usermod -aG docker "$user"
+    if [ "$OS_FAMILY" = "alpine" ]; then
+      addgroup "$user" docker
+    else
+      usermod -aG docker "$user"
+    fi
     add_report "已将 $user 加入 docker 组（重新登录后生效）"
   fi
   add_report "已安装 Docker（发行版包）"
@@ -1853,15 +2101,36 @@ optional_sudo_user() {
   esac
   group="sudo"
   [ "$OS_FAMILY" = "rhel" ] && group="wheel"
-  print_preview "创建/加固 sudo 用户" "sudo" "/etc/passwd, /etc/group, sudoers 校验" "无" "无" "禁用 root 登录前需要至少一个可用 sudo 用户" "用户创建不会自动删除" "不影响 SSH 连接"
+  [ "$OS_FAMILY" = "alpine" ] && group="wheel"
+  print_preview "创建/加固 sudo 用户" "sudo" "/etc/passwd, /etc/group, /etc/sudoers.d/vps-init-$group" "无" "无" "禁用 root 登录前需要至少一个可用 sudo 用户" "用户创建不会自动删除" "不影响 SSH 连接"
   confirm_action "是否创建/加固 sudo 用户 $user？" "yes" || return 0
   ensure_packages sudo || return 1
+  if ! grep -qE "^${group}:" /etc/group; then
+    if [ "$OS_FAMILY" = "alpine" ]; then
+      addgroup -S "$group"
+    else
+      groupadd "$group"
+    fi
+  fi
   if ! id "$user" >/dev/null 2>&1; then
-    useradd -m -s /bin/bash "$user"
+    if [ "$OS_FAMILY" = "alpine" ]; then
+      adduser -D -s /bin/ash "$user"
+    else
+      local shell="/bin/bash"
+      [ -x "$shell" ] || shell="/bin/sh"
+      useradd -m -s "$shell" "$user"
+    fi
     passwd "$user"
   fi
-  usermod -aG "$group" "$user"
-  if ! visudo -cf /etc/sudoers >/dev/null; then
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    addgroup "$user" "$group"
+  else
+    usermod -aG "$group" "$user"
+  fi
+  mkdir -p /etc/sudoers.d
+  printf '%%%s ALL=(ALL:ALL) ALL\n' "$group" >/etc/sudoers.d/vps-init-"$group"
+  chmod 440 /etc/sudoers.d/vps-init-"$group"
+  if ! visudo -cf /etc/sudoers >/dev/null || ! visudo -cf /etc/sudoers.d/vps-init-"$group" >/dev/null; then
     fail "sudoers 校验失败，请手动检查。"
     return 1
   fi
@@ -2152,6 +2421,10 @@ main() {
   refresh_detection
   if [ "$OS_FAMILY" = "unknown" ]; then
     warn "当前系统未在完整支持列表中：$OS_ID $OS_VERSION_ID。部分功能可能不可用。"
+    confirm_action "是否仍然进入菜单？" "yes" || exit 0
+  fi
+  if [ "$OS_FAMILY" = "alpine" ] && ! is_alpine_supported_version; then
+    warn "当前 Alpine 版本为 $OS_VERSION_ID；脚本主要按 Alpine 3.21-3.23 适配，其他版本请谨慎使用。"
     confirm_action "是否仍然进入菜单？" "yes" || exit 0
   fi
   main_menu
