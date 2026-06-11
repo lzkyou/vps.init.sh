@@ -50,7 +50,7 @@ grep 'SCRIPT_VERSION=' vps-init.sh
 - 诊断工具包含 `jq`，很多 VPS 测评脚本和云 API 脚本会用它解析 JSON。
 - SSH 加固里的 root 登录、密码登录和基础限制已合并为“统一配置 SSH 登录策略”，避免重复预览和重复重启。
 - Alpine/OpenRC 上 SSH 加固会写入 `/etc/ssh/sshd_config` 的脚本管理块，并在重启后用 `sshd -T` 校验最终生效值。
-- 如果 `sshd_config` 里已有 `Match` 块，脚本会尽量把自己的配置块放在它前面，避免被后续匹配段覆盖。
+- Alpine/OpenRC 的登录策略管理块会放在 `sshd_config` 文件顶部，避免镜像默认值先被读取导致脚本设置不生效。
 - 不建议直接在 WSL 内完整执行初始化脚本；WSL 只适合做语法和静态检查。
 
 ## 本地验证

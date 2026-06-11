@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.6
+# Version: 1.1.7
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.6"
+SCRIPT_VERSION="1.1.7"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -1123,34 +1123,26 @@ render_sshd_main_config_block() {
   local grace="${5:-}"
   ports="$(normalize_port_list "$ports")"
   backup_file "$SSH_MAIN_CONFIG"
-  remove_managed_sshd_block "$SSH_MAIN_CONFIG"
-  local block_tmp tmp inserted=0
+  local clean_tmp block_tmp tmp
+  clean_tmp="$(mktemp)"
   block_tmp="$(mktemp)"
+  tmp="$(mktemp)"
+  awk -v begin="$SSHD_BLOCK_BEGIN" -v end="$SSHD_BLOCK_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "$SSH_MAIN_CONFIG" >"$clean_tmp"
   {
     printf '%s\n' "$SSHD_BLOCK_BEGIN"
     write_sshd_settings_body "$ports" "$root_login" "$password_auth" "$max_auth" "$grace"
     printf '%s\n' "$SSHD_BLOCK_END"
   } >"$block_tmp"
-  tmp="$(mktemp)"
-  awk -v block="$block_tmp" '
-    function emit_block(  line) {
-      if (inserted) return
-      while ((getline line < block) > 0) print line
-      close(block)
-      inserted=1
-    }
-    /^[[:space:]]*Match[[:space:]]+/ {
-      emit_block()
-      print
-      next
-    }
-    { print }
-    END {
-      emit_block()
-    }
-  ' "$SSH_MAIN_CONFIG" >"$tmp"
+  {
+    cat "$block_tmp"
+    cat "$clean_tmp"
+  } >"$tmp"
   cat "$tmp" >"$SSH_MAIN_CONFIG"
-  rm -f "$tmp" "$block_tmp"
+  rm -f "$tmp" "$block_tmp" "$clean_tmp"
   chmod 600 "$SSH_MAIN_CONFIG" 2>/dev/null || chmod 644 "$SSH_MAIN_CONFIG" 2>/dev/null || true
   set_state_value "SSH_MAIN_BLOCK_MANAGED" "1"
   set_state_value "SSH_MANAGED" "1"
@@ -1246,6 +1238,9 @@ verify_sshd_expected_values() {
     return 0
   fi
   fail "SSH 配置已写入但最终生效值不符合预期，请检查 $SSH_MAIN_CONFIG 中是否有 Match 块或后续重复配置覆盖。"
+  say "排查建议："
+  say "  grep -nE '^(Match|PasswordAuthentication|PermitRootLogin|KbdInteractiveAuthentication)' $SSH_MAIN_CONFIG"
+  say "  sshd -T -C user=root,host=localhost,addr=你的客户端IP | grep -E 'passwordauthentication|permitrootlogin|kbdinteractiveauthentication'"
   return 1
 }
 
@@ -1570,7 +1565,7 @@ ssh_root_policy() {
     confirm_action "是否应用该 Root 登录策略？" "yes" || return 0
   fi
   ensure_packages openssh-server || return 1
-  render_sshd_config "$(get_managed_ports_or_current)" "$value" "$(get_managed_ssh_value PasswordAuthentication || true)" "$(get_managed_ssh_value MaxAuthTries || true)" "$(get_managed_ssh_value LoginGraceTime || true)"
+  render_sshd_config "" "$value" "$(get_managed_ssh_value PasswordAuthentication || true)" "$(get_managed_ssh_value MaxAuthTries || true)" "$(get_managed_ssh_value LoginGraceTime || true)"
   restart_ssh_safe && add_report "Root 登录策略已设置为 $value"
 }
 
@@ -1604,7 +1599,7 @@ ssh_password_policy() {
     confirm_action "是否恢复 SSH 密码登录？" "yes" || return 0
   fi
   ensure_packages openssh-server || return 1
-  render_sshd_config "$(get_managed_ports_or_current)" "$(get_managed_ssh_value PermitRootLogin || true)" "$value" "$(get_managed_ssh_value MaxAuthTries || true)" "$(get_managed_ssh_value LoginGraceTime || true)"
+  render_sshd_config "" "$(get_managed_ssh_value PermitRootLogin || true)" "$value" "$(get_managed_ssh_value MaxAuthTries || true)" "$(get_managed_ssh_value LoginGraceTime || true)"
   restart_ssh_safe && add_report "SSH 密码登录策略已设置为 $value"
 }
 
@@ -1627,7 +1622,7 @@ ssh_basic_limits() {
   print_preview "设置 SSH 基础限制" "openssh-server" "$SSH_DROPIN_FILE" "无" "$SSH_SERVICE" "设置 MaxAuthTries=$max_auth, LoginGraceTime=${grace}, PermitEmptyPasswords=no" "可通过撤销脚本 SSH 配置恢复" "会重启 SSH；通常不影响当前连接"
   confirm_action "是否应用 SSH 基础限制？" "yes" || return 0
   ensure_packages openssh-server || return 1
-  render_sshd_config "$(get_managed_ports_or_current)" "$(get_managed_ssh_value PermitRootLogin || true)" "$(get_managed_ssh_value PasswordAuthentication || true)" "$max_auth" "$grace"
+  render_sshd_config "" "$(get_managed_ssh_value PermitRootLogin || true)" "$(get_managed_ssh_value PasswordAuthentication || true)" "$max_auth" "$grace"
   restart_ssh_safe && add_report "已设置 SSH 基础限制"
 }
 
@@ -1739,7 +1734,9 @@ configure_ssh_login_policy() {
     return 1
   fi
 
-  print_preview "统一配置 SSH 登录策略" "openssh-server" "$SSH_DROPIN_FILE" "无" "$SSH_SERVICE" "PermitRootLogin=$root_login; PasswordAuthentication=$password_auth; KbdInteractiveAuthentication=$password_auth; MaxAuthTries=$max_auth; LoginGraceTime=$grace; PermitEmptyPasswords=no" "可通过撤销脚本 SSH 配置恢复" "会重启 SSH；如果关闭密码登录或禁止 root，请先确认 key 和 sudo 用户可用"
+  local ssh_policy_file="$SSH_DROPIN_FILE"
+  [ "$OS_FAMILY" = "alpine" ] && ssh_policy_file="$SSH_MAIN_CONFIG 中的脚本管理块"
+  print_preview "统一配置 SSH 登录策略" "openssh-server" "$ssh_policy_file" "无" "$SSH_SERVICE" "PermitRootLogin=$root_login; PasswordAuthentication=$password_auth; KbdInteractiveAuthentication=$password_auth; MaxAuthTries=$max_auth; LoginGraceTime=$grace; PermitEmptyPasswords=no；不修改 SSH 端口" "可通过撤销脚本 SSH 配置恢复" "会重启 SSH；如果关闭密码登录或禁止 root，请先确认 key 和 sudo 用户可用"
   rescue_prompt
   if [ "$root_login" = "no" ] || [ "$password_auth" = "no" ]; then
     danger_confirm "应用 SSH 安全策略（含高风险项）" || return 0
@@ -1747,7 +1744,7 @@ configure_ssh_login_policy() {
     confirm_action "是否应用 SSH 登录策略？" "yes" || return 0
   fi
   ensure_packages openssh-server || return 1
-  render_sshd_config "$(get_managed_ports_or_current)" "$root_login" "$password_auth" "$max_auth" "$grace"
+  render_sshd_config "" "$root_login" "$password_auth" "$max_auth" "$grace"
   if restart_ssh_safe && verify_sshd_expected_values "$root_login" "$password_auth" "$max_auth" "$grace"; then
     add_report "已统一配置 SSH 登录策略：root=$root_login, password=$password_auth, maxauth=$max_auth, grace=$grace"
   else
