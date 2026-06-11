@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.7
+# Version: 1.1.8
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.7"
+SCRIPT_VERSION="1.1.8"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -1200,6 +1200,13 @@ show_sshd_effective() {
   sshd -T 2>/dev/null | awk '$1=="port" || $1=="passwordauthentication" || $1=="kbdinteractiveauthentication" || $1=="permitrootlogin" || $1=="pubkeyauthentication" || $1=="maxauthtries" || $1=="logingracetime" {print "  "$0}' || true
 }
 
+normalize_permit_root_login_value() {
+  case "${1:-}" in
+    prohibit-password|without-password) echo "prohibit-password" ;;
+    *) echo "${1:-}" ;;
+  esac
+}
+
 verify_sshd_expected_values() {
   local root_login="${1:-}"
   local password_auth="${2:-}"
@@ -1213,9 +1220,11 @@ verify_sshd_expected_values() {
   actual_kbd="$(printf '%s\n' "$output" | awk '$1=="kbdinteractiveauthentication"{print $2; exit}')"
   actual_max="$(printf '%s\n' "$output" | awk '$1=="maxauthtries"{print $2; exit}')"
   actual_grace="$(printf '%s\n' "$output" | awk '$1=="logingracetime"{print $2; exit}')"
-  if [ -n "$root_login" ] && [ "$actual_root" != "$root_login" ]; then
+  if [ -n "$root_login" ] && [ "$(normalize_permit_root_login_value "$actual_root")" != "$(normalize_permit_root_login_value "$root_login")" ]; then
     warn "PermitRootLogin 未按预期生效：期望 $root_login，实际 ${actual_root:-未知}"
     ok_flag=0
+  elif [ "$root_login" = "prohibit-password" ] && [ "$actual_root" = "without-password" ]; then
+    say "PermitRootLogin 实际显示为 without-password；它与 prohibit-password 等价。"
   fi
   if [ -n "$password_auth" ] && [ "$actual_password" != "$password_auth" ]; then
     warn "PasswordAuthentication 未按预期生效：期望 $password_auth，实际 ${actual_password:-未知}"
@@ -1451,7 +1460,11 @@ rescue_prompt() {
   say "当前 SSH 来源：${SSH_CONNECTION:-未检测到 SSH_CONNECTION}"
   say "当前 SSH 端口：$SSH_PORTS"
   [ -n "$new_port" ] && say "新端口连接命令示例：ssh -p $new_port 用户名@服务器IP"
-  say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台恢复 /etc/ssh/sshd_config.d/99-vps-init.conf。"
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台删除 $SSH_MAIN_CONFIG 中 $SSHD_BLOCK_BEGIN 到 $SSHD_BLOCK_END 之间的脚本管理块。"
+  else
+    say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台恢复 $SSH_DROPIN_FILE。"
+  fi
   say
   return 0
 }
