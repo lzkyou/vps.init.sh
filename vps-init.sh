@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.1
+# Version: 1.1.2
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -1681,7 +1681,7 @@ module_system_init() {
   case "$c" in
     1) install_tool_tier "最小" curl wget ca-certificates sudo ;;
     2) install_tool_tier "常用" nano vim git unzip tar htop ;;
-    3) install_tool_tier "诊断" lsof net-tools dnsutils ;;
+    3) install_tool_tier "诊断" jq lsof net-tools dnsutils ;;
     4) set_timezone ;;
     5) configure_chrony ;;
     6) configure_auto_updates ;;
@@ -1702,6 +1702,7 @@ tool_package_desc() {
     unzip) echo "解压 .zip 文件，体积较小" ;;
     tar) echo "解压 .tar/.tar.gz 文件；多数系统已自带可用 tar" ;;
     htop) echo "交互式资源查看器，方便但低内存机器不必装" ;;
+    jq) echo "JSON 解析工具，很多 VPS 测评脚本、云 API 和探针脚本会用到" ;;
     lsof) echo "查看端口/文件占用，排查服务监听很有用" ;;
     net-tools) echo "传统 ifconfig/netstat 工具；现代系统通常用 ip/ss 替代" ;;
     dnsutils) echo "DNS 诊断工具；Debian 为 dnsutils，RHEL 为 bind-utils，Alpine 为 bind-tools" ;;
@@ -1734,7 +1735,7 @@ tool_package_default() {
     最小:wget) echo "no" ;;
     常用:nano|常用:unzip) echo "yes" ;;
     常用:vim|常用:git|常用:tar|常用:htop) echo "no" ;;
-    诊断:lsof|诊断:dnsutils) echo "yes" ;;
+    诊断:jq|诊断:lsof|诊断:dnsutils) echo "yes" ;;
     诊断:net-tools) echo "no" ;;
     *) echo "no" ;;
   esac

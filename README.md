@@ -46,6 +46,7 @@ grep 'SCRIPT_VERSION=' vps-init.sh
 - 128MB RAM 机器建议只跑极简安全初始化。
 - Alpine 小机通常很轻量，部分包可能需要启用 community 仓库。
 - 工具包安装会逐项询问；`git`、`vim`、`htop` 等并非基础必需，按需选择即可。
+- 诊断工具包含 `jq`，很多 VPS 测评脚本和云 API 脚本会用它解析 JSON。
 - 不建议直接在 WSL 内完整执行初始化脚本；WSL 只适合做语法和静态检查。
 
 ## 本地验证
