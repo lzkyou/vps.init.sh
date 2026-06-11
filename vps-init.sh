@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.8
+# Version: 1.1.9
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.8"
+SCRIPT_VERSION="1.1.9"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -220,7 +220,7 @@ confirm_action() {
       0) warn "已返回上一级。"; return 1 ;;
       y|Y|yes|YES|Yes|yES|是) return 0 ;;
       n|N|no|NO|No|nO|否) return 1 ;;
-      *) say "请输入 y/yes/是、n/no/否，或 0 返回；直接回车使用默认值。" ;;
+      *) say "没看懂，输入 y/yes/是、n/no/否，或 0 返回；直接回车走默认值。" ;;
     esac
   done
 }
@@ -229,14 +229,14 @@ danger_confirm() {
   local prompt="$1"
   local ans
   say
-  color_yellow "危险操作：$prompt"
-  say "如果你确认继续，请输入完整 yes 或 是。输入 0 返回上一级；回车、y、Y 都不会继续。"
+  color_yellow "这一步风险较高：$prompt"
+  say "确认继续请输入完整 yes 或 是。输入 0 返回；直接回车不会继续。"
   printf '请输入 yes / 是 / 0: '
   read -r ans || ans=""
   case "$ans" in
     yes|YES|Yes|yES|是) return 0 ;;
     0) warn "已返回上一级。"; return 1 ;;
-    *) warn "已取消危险操作。"; return 1 ;;
+    *) warn "已取消。"; return 1 ;;
   esac
 }
 
@@ -498,16 +498,16 @@ print_preview() {
   local services="${5:-无}"
   local impacts="${6:-无}"
   local reversible="${7:-部分可撤销}"
-  local ssh_risk="${8:-通常不影响当前 SSH 连接}"
+  local ssh_risk="${8:-一般不影响当前 SSH 连接}"
   say
-  color_blue "========== 执行预览：$title =========="
-  say "将安装/检查依赖：$packages"
-  say "将写入/修改/删除文件：$files"
-  say "将新增/移除端口规则：$ports"
-  say "将重启/启用服务：$services"
-  say "关联影响/提醒：$impacts"
-  say "撤销能力：$reversible"
-  say "SSH 连接风险：$ssh_risk"
+  color_blue "========== 先看一眼：$title =========="
+  say "会检查/安装：$packages"
+  say "会动到这些文件：$files"
+  say "端口规则：$ports"
+  say "会重启/启用：$services"
+  say "需要留意：$impacts"
+  say "回退方式：$reversible"
+  say "对 SSH 的影响：$ssh_risk"
   say "=========================================="
 }
 
@@ -883,18 +883,18 @@ confirm_existing_ssh_keys_policy() {
   fi
 
   say
-  color_yellow "检测到用户 $user 已有 SSH key：$key_count 个。"
+  color_yellow "用户 $user 已经有 SSH key：$key_count 个。"
   say "authorized_keys：$auth"
   if [ "$managed_count" -eq 1 ]; then
-    say "其中包含本脚本之前添加的 key 标记块。"
+    say "这里面有本脚本之前添加的 key。"
   else
-    say "未检测到本脚本标记块，现有 key 可能来自 VPS 服务商面板或你之前手动配置。"
+    say "这些 key 不是脚本加的，可能来自服务商面板，也可能是你之前手动放的。"
   fi
   say
-  say "建议："
-  say "  - 如果你现在已经能用 key 登录，可以选择跳过，避免重复配置。"
-  say "  - 如果要添加新的 key，推荐选择 2：保留现有 key，只替换/新增脚本管理的 key。"
-  say "  - 不建议覆盖全部 key，除非你确定旧 key 已泄露或不再需要。"
+  say "我的建议："
+  say "  - 现在已经能用 key 登录，就直接跳过。"
+  say "  - 想加一个新 key，选 2，保留旧 key，只动脚本自己的那一段。"
+  say "  - 别轻易选 3，除非你确定旧 key 都不要了。"
   say
   say "1. 跳过 SSH key 配置"
   say "2. 保留现有 key，追加/替换脚本管理的 key（推荐）"
@@ -941,7 +941,7 @@ ssh_key_paste() {
     fail "公钥格式看起来不正确，已取消。"
     return 1
   fi
-  print_preview "写入 SSH 公钥" "openssh-server" "$(authorized_keys_path "$user")" "无" "无" "将允许用户 $user 使用该 key 登录" "可通过撤销菜单删除脚本管理的 key" "不影响当前 SSH 连接"
+  print_preview "写入 SSH 公钥" "openssh-server" "$(authorized_keys_path "$user")" "无" "无" "以后用户 $user 就能用这个 key 登录" "可以在撤销菜单删掉脚本加的 key" "一般不影响当前 SSH 连接"
   confirm_action "是否写入该公钥？" "yes" || return 0
   ensure_packages openssh-server || return 1
   write_managed_key "$user" "$key"
@@ -954,9 +954,9 @@ ssh_key_generate_on_vps() {
   local key_file
   key_file="$key_dir/id_ed25519_vps_init_$(date '+%Y%m%d_%H%M%S')"
 
-  print_preview "VPS 临时生成 SSH keypair" "openssh-server" "$key_file, $(authorized_keys_path "$user")" "无" "无" "私钥会短暂保存在 VPS；请保存到本地后删除 VPS 副本" "公钥可撤销；私钥删除后不可恢复" "不影响当前 SSH 连接"
-  say "安全提示：更推荐在你自己的电脑生成 key 后粘贴公钥。"
-  say "如果继续，私钥可能被终端日志、服务商面板记录或录屏泄露。"
+  print_preview "VPS 临时生成 SSH keypair" "openssh-server" "$key_file, $(authorized_keys_path "$user")" "无" "无" "私钥会临时放在 VPS 上；保存到本地后建议马上删掉" "公钥能撤销；私钥删了就找不回来了" "一般不影响当前 SSH 连接"
+  say "提醒一下：更推荐在你自己的电脑生成 key，然后只把公钥贴进来。"
+  say "继续的话，私钥会在终端里出现，面板日志或录屏都有可能看到它。"
   danger_confirm "在 VPS 上临时生成并展示 SSH 私钥" || return 0
 
   ensure_packages openssh-server || return 1
@@ -1001,17 +1001,17 @@ module_ssh_key() {
   show_system_brief
   say
   color_blue "配置 SSH Key 登录"
-  say "这个功能会把 SSH 公钥写入服务器用户的 authorized_keys。"
-  say "之后你可以用对应私钥登录 VPS，后续再考虑关闭密码登录。"
-  say "如果系统里已经有 SSH key，它可能来自服务商面板预置或你之前的配置，本脚本默认不会强行覆盖。"
+  say "这里会把你的 SSH 公钥放进服务器的 authorized_keys。"
+  say "等 key 登录确认没问题，再去关密码登录会稳很多。"
+  say "如果机器里已经有 key，可能是服务商面板帮你放好的；脚本默认不会覆盖它。"
   say
-  say "推荐给小白的选择："
-  say "  1. 如果你已经有 id_ed25519.pub / id_rsa.pub，选 1 粘贴公钥。"
-  say "  2. 如果你完全不知道 SSH Key 是什么，选 2，由脚本临时生成并提示你保存私钥。"
-  say "     注意：更安全的做法仍然是在你自己的电脑本地生成 key。"
+  say "怎么选："
+  say "  1. 手里已经有 id_ed25519.pub / id_rsa.pub，就选 1。"
+  say "  2. 完全没准备 key，就选 2，让脚本临时生成一套。"
+  say "     更稳妥的做法，还是在你自己的电脑上生成 key。"
   say
-  say "1. 更安全：粘贴本地生成的 .pub 公钥"
-  say "2. 简单：脚本在 VPS 临时生成 keypair"
+  say "1. 粘贴本地生成的 .pub 公钥（推荐）"
+  say "2. 在 VPS 上临时生成一套 key"
   say "3. 删除脚本添加的 SSH key"
   say "0. 返回"
   printf '请选择: '
@@ -1041,7 +1041,7 @@ module_ssh_key() {
     3)
       user="$(select_target_user)" || return 0
       auth="$(authorized_keys_path "$user")"
-      print_preview "删除脚本管理的 SSH key" "无" "$auth" "无" "无" "将删除 $SSH_KEY_BEGIN 与 $SSH_KEY_END 之间的 key" "不可自动恢复，除非你有原公钥" "不影响当前已建立 SSH 连接，但会影响后续 key 登录"
+      print_preview "删除脚本管理的 SSH key" "无" "$auth" "无" "无" "会删掉 $SSH_KEY_BEGIN 和 $SSH_KEY_END 之间那段 key" "除非你留着原公钥，否则删了就得重新加" "当前连接不会断，但下次 key 登录可能受影响"
       if danger_confirm "删除脚本添加的 SSH key"; then
         remove_managed_key_block "$auth"
         set_state_value "SSH_KEY_MANAGED" "0"
@@ -1246,8 +1246,8 @@ verify_sshd_expected_values() {
     ok "SSH 关键配置已按预期生效。"
     return 0
   fi
-  fail "SSH 配置已写入但最终生效值不符合预期，请检查 $SSH_MAIN_CONFIG 中是否有 Match 块或后续重复配置覆盖。"
-  say "排查建议："
+  fail "配置已经写进去了，但 sshd 最后读出来的结果不对。可能是 $SSH_MAIN_CONFIG 里还有别的配置抢先了。"
+  say "可以先看这两条："
   say "  grep -nE '^(Match|PasswordAuthentication|PermitRootLogin|KbdInteractiveAuthentication)' $SSH_MAIN_CONFIG"
   say "  sshd -T -C user=root,host=localhost,addr=你的客户端IP | grep -E 'passwordauthentication|permitrootlogin|kbdinteractiveauthentication'"
   return 1
@@ -1461,9 +1461,9 @@ rescue_prompt() {
   say "当前 SSH 端口：$SSH_PORTS"
   [ -n "$new_port" ] && say "新端口连接命令示例：ssh -p $new_port 用户名@服务器IP"
   if [ "$OS_FAMILY" = "alpine" ]; then
-    say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台删除 $SSH_MAIN_CONFIG 中 $SSHD_BLOCK_BEGIN 到 $SSHD_BLOCK_END 之间的脚本管理块。"
+    say "先别关这个窗口。新连接如果失败，可以去 VPS 控制台删掉 $SSH_MAIN_CONFIG 里 $SSHD_BLOCK_BEGIN 到 $SSHD_BLOCK_END 之间那段。"
   else
-    say "如果新连接失败，请不要关闭当前终端；可从 VPS 控制台恢复 $SSH_DROPIN_FILE。"
+    say "先别关这个窗口。新连接如果失败，可以去 VPS 控制台恢复 $SSH_DROPIN_FILE。"
   fi
   say
   return 0
@@ -1672,9 +1672,9 @@ configure_ssh_login_policy() {
   show_system_brief
   say
   color_blue "统一配置 SSH 登录策略"
-  say "这个功能会一次性调整：Root 登录、密码登录、MaxAuthTries、LoginGraceTime、PermitEmptyPasswords。"
-  say "如果你要关闭密码登录，先确认已有可用 SSH key。"
-  say "如果你要禁止 root 登录，先确认已有非 root sudo 用户。"
+  say "这一步会一起处理 root 登录、密码登录和几个基础限制。"
+  say "准备关密码前，先确认 key 登录真的能用。"
+  say "准备禁用 root 前，先确认手里有能 sudo 的普通用户。"
   say
 
   local current_root current_password current_max current_grace
@@ -1761,7 +1761,7 @@ configure_ssh_login_policy() {
   if restart_ssh_safe && verify_sshd_expected_values "$root_login" "$password_auth" "$max_auth" "$grace"; then
     add_report "已统一配置 SSH 登录策略：root=$root_login, password=$password_auth, maxauth=$max_auth, grace=$grace"
   else
-    warn "SSH 登录策略可能未完全生效；请不要关闭当前 SSH 连接，建议查看上方 sshd -T 输出。"
+    warn "SSH 登录策略可能没完全生效；先别关当前连接，看看上面的 sshd -T 输出。"
     return 1
   fi
 }
@@ -2094,7 +2094,7 @@ confirm_package_choice() {
       0) return 2 ;;
       y|Y|yes|YES|Yes|yES|是) return 0 ;;
       n|N|no|NO|No|nO|否) return 1 ;;
-      *) say "    请输入 y/yes/是、n/no/否，或 0 返回；直接回车使用默认值。" >&2 ;;
+      *) say "    没看懂，输入 y/yes/是、n/no/否，或 0 返回；直接回车走默认值。" >&2 ;;
     esac
   done
 }
@@ -2104,8 +2104,8 @@ select_tool_packages() {
   shift
   local selected=()
   local pkg default desc rc
-  say "请选择要安装的${tier}工具。回车采用每项推荐默认值，输入 0 返回上一级。" >&2
-  say "建议：低配/NAT 小机先少装，真正需要时再回来补装。" >&2
+  say "选一下要装的${tier}工具。回车按推荐来，输入 0 返回上一级。" >&2
+  say "低配/NAT 小机先少装点，用到再回来补也不迟。" >&2
   say >&2
   for pkg in "$@"; do
     default="$(tool_package_default "$tier" "$pkg")"
