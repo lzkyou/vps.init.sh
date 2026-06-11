@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.3
+# Version: 1.1.4
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.3"
+SCRIPT_VERSION="1.1.4"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -817,6 +817,29 @@ remove_managed_key_block() {
   rm -f "$tmp"
 }
 
+authorized_keys_count() {
+  local file="$1"
+  [ -f "$file" ] || { echo 0; return 0; }
+  grep -Ec '^[[:space:]]*(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$file" 2>/dev/null || echo 0
+}
+
+has_managed_key_block() {
+  local file="$1"
+  [ -f "$file" ] && grep -Fxq "$SSH_KEY_BEGIN" "$file" 2>/dev/null
+}
+
+clear_authorized_keys() {
+  local user="$1"
+  prepare_ssh_dir "$user"
+  local auth group
+  auth="$(authorized_keys_path "$user")"
+  group="$(user_group "$user")"
+  backup_file "$auth"
+  : >"$auth"
+  chmod 600 "$auth"
+  chown "$user:$group" "$auth"
+}
+
 write_managed_key() {
   local user="$1"
   local key="$2"
@@ -842,8 +865,68 @@ write_managed_key() {
   add_report "已配置 SSH key 登录：用户 $user"
 }
 
+confirm_existing_ssh_keys_policy() {
+  local user="$1"
+  local auth key_count managed_count
+  auth="$(authorized_keys_path "$user")"
+  key_count="$(authorized_keys_count "$auth")"
+  managed_count=0
+  has_managed_key_block "$auth" && managed_count=1
+  if [ "$key_count" -eq 0 ]; then
+    return 0
+  fi
+
+  say
+  color_yellow "检测到用户 $user 已有 SSH key：$key_count 个。"
+  say "authorized_keys：$auth"
+  if [ "$managed_count" -eq 1 ]; then
+    say "其中包含本脚本之前添加的 key 标记块。"
+  else
+    say "未检测到本脚本标记块，现有 key 可能来自 VPS 服务商面板或你之前手动配置。"
+  fi
+  say
+  say "建议："
+  say "  - 如果你现在已经能用 key 登录，可以选择跳过，避免重复配置。"
+  say "  - 如果要添加新的 key，推荐选择 2：保留现有 key，只替换/新增脚本管理的 key。"
+  say "  - 不建议覆盖全部 key，除非你确定旧 key 已泄露或不再需要。"
+  say
+  say "1. 跳过 SSH key 配置"
+  say "2. 保留现有 key，追加/替换脚本管理的 key（推荐）"
+  say "3. 危险：清空 authorized_keys 后只写入新 key"
+  say "0. 返回"
+  printf '请选择 [默认 1]: '
+  local choice
+  read -r choice || choice=""
+  case "${choice:-1}" in
+    1)
+      ok "已跳过 SSH key 配置；保留现有 authorized_keys 不变。"
+      add_report "检测到已有 SSH key，已跳过重复配置：用户 $user"
+      return 1
+      ;;
+    2)
+      return 0
+      ;;
+    3)
+      print_preview "覆盖 authorized_keys" "无" "$auth" "无" "无" "将备份后清空现有所有 SSH key，再写入新的脚本管理 key" "可从 $BACKUP_DIR 找备份手动恢复" "如果新 key 保存错误，可能影响后续 SSH 登录"
+      danger_confirm "清空 $user 的 authorized_keys 并只保留新 key" || return 1
+      clear_authorized_keys "$user"
+      warn "已清空 $auth，接下来会写入新的 key。"
+      return 0
+      ;;
+    0)
+      warn "已返回上一级。"
+      return 1
+      ;;
+    *)
+      warn "无效选择，已取消本次 SSH key 配置。"
+      return 1
+      ;;
+  esac
+}
+
 ssh_key_paste() {
   local user="$1"
+  confirm_existing_ssh_keys_policy "$user" || return 0
   say "请粘贴你的 .pub 公钥内容。"
   say "示例开头：ssh-ed25519 或 ssh-rsa"
   local key
@@ -860,6 +943,7 @@ ssh_key_paste() {
 
 ssh_key_generate_on_vps() {
   local user="$1"
+  confirm_existing_ssh_keys_policy "$user" || return 0
   local key_dir="/root/vps-init-keys"
   local key_file
   key_file="$key_dir/id_ed25519_vps_init_$(date '+%Y%m%d_%H%M%S')"
@@ -913,6 +997,7 @@ module_ssh_key() {
   color_blue "配置 SSH Key 登录"
   say "这个功能会把 SSH 公钥写入服务器用户的 authorized_keys。"
   say "之后你可以用对应私钥登录 VPS，后续再考虑关闭密码登录。"
+  say "如果系统里已经有 SSH key，它可能来自服务商面板预置或你之前的配置，本脚本默认不会强行覆盖。"
   say
   say "推荐给小白的选择："
   say "  1. 如果你已经有 id_ed25519.pub / id_rsa.pub，选 1 粘贴公钥。"
@@ -930,8 +1015,7 @@ module_ssh_key() {
     1)
       user="$(select_target_user)" || return 0
       auth="$(authorized_keys_path "$user")"
-      key_count=0
-      [ -f "$auth" ] && key_count="$(grep -Ec '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$auth" 2>/dev/null || echo 0)"
+      key_count="$(authorized_keys_count "$auth")"
       say "目标用户：$user"
       say "authorized_keys：$auth"
       say "当前检测到 key 数量：$key_count"
@@ -941,8 +1025,7 @@ module_ssh_key() {
     2)
       user="$(select_target_user)" || return 0
       auth="$(authorized_keys_path "$user")"
-      key_count=0
-      [ -f "$auth" ] && key_count="$(grep -Ec '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$auth" 2>/dev/null || echo 0)"
+      key_count="$(authorized_keys_count "$auth")"
       say "目标用户：$user"
       say "authorized_keys：$auth"
       say "当前检测到 key 数量：$key_count"

@@ -44,6 +44,7 @@ grep 'SCRIPT_VERSION=' vps-init.sh
 - 高风险 SSH 操作前请不要关闭当前终端。
 - NAT VPS 需要确认服务商面板的公网端口映射。
 - 128MB RAM 机器建议只跑极简安全初始化。
+- SSH Key 配置会检测已有 `authorized_keys`；默认跳过，避免覆盖服务商面板预置 key。
 - Alpine 小机通常很轻量，部分包可能需要启用 community 仓库。
 - 工具包安装会逐项询问；`git`、`vim`、`htop` 等并非基础必需，按需选择即可。
 - 诊断工具包含 `jq`，很多 VPS 测评脚本和云 API 脚本会用它解析 JSON。
