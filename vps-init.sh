@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.2
+# Version: 1.1.3
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -1268,18 +1268,14 @@ module_ssh_hardening() {
   say
   color_blue "SSH 安全加固"
   say "1. 修改 SSH 端口（两阶段迁移）"
-  say "2. 修改 Root 登录策略"
-  say "3. 修改密码登录策略"
-  say "4. 设置基础 SSH 限制（MaxAuthTries/LoginGraceTime/禁用空密码）"
+  say "2. 统一配置 SSH 登录策略（root / 密码登录 / 基础限制）"
   say "0. 返回"
   printf '请选择: '
   local choice
   read -r choice || choice=""
   case "$choice" in
     1) ssh_change_port ;;
-    2) ssh_root_policy ;;
-    3) ssh_password_policy ;;
-    4) ssh_basic_limits ;;
+    2) configure_ssh_login_policy ;;
   esac
   pause
 }
@@ -1442,6 +1438,117 @@ get_managed_ports_or_current() {
     ports="$(awk 'tolower($1)=="port"{print $2}' "$SSH_DROPIN_FILE" | xargs 2>/dev/null || true)"
   fi
   [ -n "$ports" ] && echo "$ports" || echo "$SSH_PORTS"
+}
+
+get_sshd_effective_value() {
+  local key="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  command_exists sshd || return 1
+  sshd -T 2>/dev/null | awk -v k="$key" '$1==k {print $2; exit}'
+}
+
+get_managed_or_effective_ssh_value() {
+  local key="$1"
+  local value
+  value="$(get_managed_ssh_value "$key" || true)"
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  value="$(get_sshd_effective_value "$key" || true)"
+  [ -n "$value" ] && printf '%s\n' "$value" || return 1
+}
+
+configure_ssh_login_policy() {
+  print_header
+  refresh_detection
+  show_system_brief
+  say
+  color_blue "统一配置 SSH 登录策略"
+  say "这个功能会一次性调整：Root 登录、密码登录、MaxAuthTries、LoginGraceTime、PermitEmptyPasswords。"
+  say "如果你要关闭密码登录，先确认已有可用 SSH key。"
+  say "如果你要禁止 root 登录，先确认已有非 root sudo 用户。"
+  say
+
+  local current_root current_password current_max current_grace
+  current_root="$(get_managed_or_effective_ssh_value PermitRootLogin || true)"
+  current_password="$(get_managed_or_effective_ssh_value PasswordAuthentication || true)"
+  current_max="$(get_managed_or_effective_ssh_value MaxAuthTries || true)"
+  current_grace="$(get_managed_or_effective_ssh_value LoginGraceTime || true)"
+  say "当前生效值："
+  say "  PermitRootLogin=${current_root:-未知}"
+  say "  PasswordAuthentication=${current_password:-未知}"
+  say "  MaxAuthTries=${current_max:-未知}"
+  say "  LoginGraceTime=${current_grace:-未知}"
+  say "  PermitEmptyPasswords=no"
+  say
+
+  say "Root 登录策略："
+  say "  1. 禁止 root 登录 (no)"
+  say "  2. 仅允许 root 使用密钥登录 (prohibit-password)"
+  say "  3. 保持/恢复为 yes"
+  say "  4. 保持当前值"
+  printf '请选择 [默认 4]: '
+  local root_choice root_login password_choice password_auth max_auth grace key_user
+  read -r root_choice || root_choice=""
+  case "$root_choice" in
+    1) root_login="no" ;;
+    2) root_login="prohibit-password" ;;
+    3) root_login="yes" ;;
+    4|"") root_login="${current_root:-yes}" ;;
+    *) warn "无效选择，已保持当前 root 策略。" ; root_login="${current_root:-yes}" ;;
+  esac
+
+  say
+  say "密码登录策略："
+  say "  1. 关闭密码登录，仅允许 SSH key"
+  say "  2. 恢复密码登录"
+  say "  3. 保持当前值"
+  printf '请选择 [默认 3]: '
+  read -r password_choice || password_choice=""
+  case "$password_choice" in
+    1) password_auth="no" ;;
+    2) password_auth="yes" ;;
+    3|"") password_auth="${current_password:-yes}" ;;
+    *) warn "无效选择，已保持当前密码登录策略。" ; password_auth="${current_password:-yes}" ;;
+  esac
+
+  printf 'MaxAuthTries [默认 %s]: ' "${current_max:-3}"
+  read -r max_auth || max_auth=""
+  max_auth="${max_auth:-${current_max:-3}}"
+  printf 'LoginGraceTime [默认 %s]: ' "${current_grace:-30}"
+  read -r grace || grace=""
+  grace="${grace:-${current_grace:-30}}"
+
+  if [ "$root_login" = "no" ] && ! has_non_root_sudo_user; then
+    fail "未检测到非 root sudo 用户，禁止 root 登录可能锁机。请先创建 sudo 用户。"
+    return 1
+  fi
+  if [ "$password_auth" = "no" ]; then
+    key_user="$(select_user_for_key_check)" || return 1
+    if ! target_user_has_key "$key_user"; then
+      fail "未检测到用户 $key_user 的 SSH key。请先配置 SSH Key 登录。"
+      return 1
+    fi
+  fi
+  if ! [[ "$max_auth" =~ ^[0-9]+$ ]] || [ "$max_auth" -lt 1 ] || [ "$max_auth" -gt 10 ]; then
+    fail "MaxAuthTries 应为 1-10。"
+    return 1
+  fi
+  if ! [[ "$grace" =~ ^[0-9]+$ ]]; then
+    fail "LoginGraceTime 应为秒数。"
+    return 1
+  fi
+
+  print_preview "统一配置 SSH 登录策略" "openssh-server" "$SSH_DROPIN_FILE" "无" "$SSH_SERVICE" "PermitRootLogin=$root_login; PasswordAuthentication=$password_auth; KbdInteractiveAuthentication=$password_auth; MaxAuthTries=$max_auth; LoginGraceTime=$grace; PermitEmptyPasswords=no" "可通过撤销脚本 SSH 配置恢复" "会重启 SSH；如果关闭密码登录或禁止 root，请先确认 key 和 sudo 用户可用"
+  rescue_prompt
+  if [ "$root_login" = "no" ] || [ "$password_auth" = "no" ]; then
+    danger_confirm "应用 SSH 安全策略（含高风险项）" || return 0
+  else
+    confirm_action "是否应用 SSH 登录策略？" "yes" || return 0
+  fi
+  ensure_packages openssh-server || return 1
+  render_sshd_config "$(get_managed_ports_or_current)" "$root_login" "$password_auth" "$max_auth" "$grace"
+  restart_ssh_safe && add_report "已统一配置 SSH 登录策略：root=$root_login, password=$password_auth, maxauth=$max_auth, grace=$grace"
 }
 
 module_fail2ban() {
@@ -2169,14 +2276,11 @@ module_minimal_security() {
   say
   color_blue "极简安全初始化"
   say "适合 128MB RAM、NAT VPS、临时机器。不会安装 fail2ban、Docker、firewalld，不做全量升级。"
-  say "将逐项预览和确认：SSH key、sudo 用户检查、SSH 基础限制、可选关闭密码登录。"
+  say "将逐项预览和确认：SSH key、sudo 用户检查、统一 SSH 登录策略。"
   confirm_action "是否进入极简安全初始化向导？" "yes" || { pause; return; }
   module_ssh_key
   optional_sudo_user
-  ssh_basic_limits
-  if confirm_action "是否考虑关闭 SSH 密码登录？" "no"; then
-    ssh_password_policy
-  fi
+  configure_ssh_login_policy
   pause
 }
 
@@ -2202,7 +2306,7 @@ module_recommended() {
 
   if confirm_action "第 1 项：配置 SSH Key 登录？" "yes"; then module_ssh_key; fi
   if confirm_action "第 2 项：创建/确认 sudo 用户？" "yes"; then optional_sudo_user; fi
-  if confirm_action "第 3 项：设置 SSH 基础限制？" "yes"; then ssh_basic_limits; fi
+  if confirm_action "第 3 项：统一配置 SSH 登录策略？" "yes"; then configure_ssh_login_policy; fi
   if [ "$MEM_TOTAL_MB" -ge 512 ] && confirm_action "第 4 项：配置 fail2ban？" "yes"; then module_fail2ban; fi
   if confirm_action "第 5 项：配置防火墙放行 SSH？" "yes"; then firewall_enable_ssh; fi
   if confirm_action "第 6 项：启用 BBR？" "yes"; then module_bbr; fi

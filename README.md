@@ -47,6 +47,7 @@ grep 'SCRIPT_VERSION=' vps-init.sh
 - Alpine 小机通常很轻量，部分包可能需要启用 community 仓库。
 - 工具包安装会逐项询问；`git`、`vim`、`htop` 等并非基础必需，按需选择即可。
 - 诊断工具包含 `jq`，很多 VPS 测评脚本和云 API 脚本会用它解析 JSON。
+- SSH 加固里的 root 登录、密码登录和基础限制已合并为“统一配置 SSH 登录策略”，避免重复预览和重复重启。
 - 不建议直接在 WSL 内完整执行初始化脚本；WSL 只适合做语法和静态检查。
 
 ## 本地验证
