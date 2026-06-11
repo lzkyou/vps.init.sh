@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.5
+# Version: 1.1.6
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.6"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -842,6 +842,10 @@ clear_authorized_keys() {
   chown "$user:$group" "$auth"
 }
 
+normalize_port_list() {
+  printf '%s\n' "$*" | tr ' ' '\n' | awk 'NF' | sort -n -u | xargs 2>/dev/null || true
+}
+
 write_managed_key() {
   local user="$1"
   local key="$2"
@@ -1117,13 +1121,36 @@ render_sshd_main_config_block() {
   local password_auth="${3:-}"
   local max_auth="${4:-}"
   local grace="${5:-}"
+  ports="$(normalize_port_list "$ports")"
   backup_file "$SSH_MAIN_CONFIG"
   remove_managed_sshd_block "$SSH_MAIN_CONFIG"
+  local block_tmp tmp inserted=0
+  block_tmp="$(mktemp)"
   {
-    printf '\n%s\n' "$SSHD_BLOCK_BEGIN"
+    printf '%s\n' "$SSHD_BLOCK_BEGIN"
     write_sshd_settings_body "$ports" "$root_login" "$password_auth" "$max_auth" "$grace"
     printf '%s\n' "$SSHD_BLOCK_END"
-  } >>"$SSH_MAIN_CONFIG"
+  } >"$block_tmp"
+  tmp="$(mktemp)"
+  awk -v block="$block_tmp" '
+    function emit_block(  line) {
+      if (inserted) return
+      while ((getline line < block) > 0) print line
+      close(block)
+      inserted=1
+    }
+    /^[[:space:]]*Match[[:space:]]+/ {
+      emit_block()
+      print
+      next
+    }
+    { print }
+    END {
+      emit_block()
+    }
+  ' "$SSH_MAIN_CONFIG" >"$tmp"
+  cat "$tmp" >"$SSH_MAIN_CONFIG"
+  rm -f "$tmp" "$block_tmp"
   chmod 600 "$SSH_MAIN_CONFIG" 2>/dev/null || chmod 644 "$SSH_MAIN_CONFIG" 2>/dev/null || true
   set_state_value "SSH_MAIN_BLOCK_MANAGED" "1"
   set_state_value "SSH_MANAGED" "1"
