@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.4
+# Version: 1.1.5
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.4"
+SCRIPT_VERSION="1.1.5"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -46,6 +46,8 @@ SSH_DROPIN_FILE="$SSH_DROPIN_DIR/99-vps-init.conf"
 SSH_MAIN_CONFIG="/etc/ssh/sshd_config"
 SSH_KEY_BEGIN="# BEGIN VPS-INIT SSH KEY"
 SSH_KEY_END="# END VPS-INIT SSH KEY"
+SSHD_BLOCK_BEGIN="# BEGIN VPS-INIT SSHD CONFIG"
+SSHD_BLOCK_END="# END VPS-INIT SSHD CONFIG"
 
 F2B_FILE="/etc/fail2ban/jail.d/99-vps-init.conf"
 BBR_FILE="/etc/sysctl.d/99-vps-init-bbr.conf"
@@ -426,14 +428,14 @@ detect_ssh() {
   if command_exists sshd; then
     local output
     output="$(sshd -T 2>/dev/null || true)"
-    SSH_PORTS="$(printf '%s\n' "$output" | awk '$1=="port"{print $2}' | sort -n | xargs 2>/dev/null || true)"
+    SSH_PORTS="$(printf '%s\n' "$output" | awk '$1=="port"{print $2}' | sort -n -u | xargs 2>/dev/null || true)"
     [ -z "$SSH_PORTS" ] && SSH_PORTS="22"
     SSH_PASSWORD_AUTH="$(printf '%s\n' "$output" | awk '$1=="passwordauthentication"{print $2; exit}')"
     SSH_ROOT_LOGIN="$(printf '%s\n' "$output" | awk '$1=="permitrootlogin"{print $2; exit}')"
     [ -z "$SSH_PASSWORD_AUTH" ] && SSH_PASSWORD_AUTH="unknown"
     [ -z "$SSH_ROOT_LOGIN" ] && SSH_ROOT_LOGIN="unknown"
   elif [ -r "$SSH_MAIN_CONFIG" ]; then
-    SSH_PORTS="$(awk 'tolower($1)=="port"{print $2}' "$SSH_MAIN_CONFIG" | sort -n | xargs 2>/dev/null || true)"
+    SSH_PORTS="$(awk 'tolower($1)=="port"{print $2}' "$SSH_MAIN_CONFIG" | sort -n -u | xargs 2>/dev/null || true)"
     [ -z "$SSH_PORTS" ] && SSH_PORTS="22"
   fi
 
@@ -1072,6 +1074,61 @@ ensure_sshd_dropin_enabled() {
   warn "当前 sshd_config 未启用 drop-in，已在文件顶部加入 Include。"
 }
 
+remove_managed_sshd_block() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  awk -v begin="$SSHD_BLOCK_BEGIN" -v end="$SSHD_BLOCK_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
+
+write_sshd_settings_body() {
+  local ports="${1:-}"
+  local root_login="${2:-}"
+  local password_auth="${3:-}"
+  local max_auth="${4:-}"
+  local grace="${5:-}"
+  echo "# Managed by vps-init $SCRIPT_VERSION"
+  echo "# 删除本段或脚本配置文件可撤销脚本管理的 SSH 加固配置。"
+  if [ -n "$ports" ]; then
+    local p
+    for p in $ports; do
+      echo "Port $p"
+    done
+  fi
+  [ -n "$root_login" ] && echo "PermitRootLogin $root_login"
+  [ -n "$password_auth" ] && echo "PasswordAuthentication $password_auth"
+  [ -n "$password_auth" ] && echo "KbdInteractiveAuthentication $password_auth"
+  echo "PubkeyAuthentication yes"
+  echo "PermitEmptyPasswords no"
+  [ -n "$max_auth" ] && echo "MaxAuthTries $max_auth"
+  [ -n "$grace" ] && echo "LoginGraceTime $grace"
+}
+
+render_sshd_main_config_block() {
+  local ports="${1:-}"
+  local root_login="${2:-}"
+  local password_auth="${3:-}"
+  local max_auth="${4:-}"
+  local grace="${5:-}"
+  backup_file "$SSH_MAIN_CONFIG"
+  remove_managed_sshd_block "$SSH_MAIN_CONFIG"
+  {
+    printf '\n%s\n' "$SSHD_BLOCK_BEGIN"
+    write_sshd_settings_body "$ports" "$root_login" "$password_auth" "$max_auth" "$grace"
+    printf '%s\n' "$SSHD_BLOCK_END"
+  } >>"$SSH_MAIN_CONFIG"
+  chmod 600 "$SSH_MAIN_CONFIG" 2>/dev/null || chmod 644 "$SSH_MAIN_CONFIG" 2>/dev/null || true
+  set_state_value "SSH_MAIN_BLOCK_MANAGED" "1"
+  set_state_value "SSH_MANAGED" "1"
+}
+
 get_managed_ssh_value() {
   local key="$1"
   [ -f "$SSH_DROPIN_FILE" ] || return 1
@@ -1085,25 +1142,17 @@ render_sshd_config() {
   local max_auth="${4:-}"
   local grace="${5:-}"
 
+  if [ "$OS_FAMILY" = "alpine" ]; then
+    warn "Alpine/OpenRC 环境优先写入 $SSH_MAIN_CONFIG 的脚本管理块，避免 drop-in 未被 sshd 加载。"
+    render_sshd_main_config_block "$ports" "$root_login" "$password_auth" "$max_auth" "$grace"
+    return 0
+  fi
+
   ensure_sshd_dropin_enabled
   backup_file "$SSH_DROPIN_FILE"
 
   {
-    echo "# Managed by vps-init $SCRIPT_VERSION"
-    echo "# 删除本文件可撤销脚本管理的 SSH 加固配置。"
-    if [ -n "$ports" ]; then
-      local p
-      for p in $ports; do
-        echo "Port $p"
-      done
-    fi
-    [ -n "$root_login" ] && echo "PermitRootLogin $root_login"
-    [ -n "$password_auth" ] && echo "PasswordAuthentication $password_auth"
-    [ -n "$password_auth" ] && echo "KbdInteractiveAuthentication $password_auth"
-    echo "PubkeyAuthentication yes"
-    echo "PermitEmptyPasswords no"
-    [ -n "$max_auth" ] && echo "MaxAuthTries $max_auth"
-    [ -n "$grace" ] && echo "LoginGraceTime $grace"
+    write_sshd_settings_body "$ports" "$root_login" "$password_auth" "$max_auth" "$grace"
   } >"$SSH_DROPIN_FILE"
 
   chmod 644 "$SSH_DROPIN_FILE"
@@ -1130,6 +1179,47 @@ show_sshd_effective() {
   say
   say "当前 sshd -T 关键生效值："
   sshd -T 2>/dev/null | awk '$1=="port" || $1=="passwordauthentication" || $1=="kbdinteractiveauthentication" || $1=="permitrootlogin" || $1=="pubkeyauthentication" || $1=="maxauthtries" || $1=="logingracetime" {print "  "$0}' || true
+}
+
+verify_sshd_expected_values() {
+  local root_login="${1:-}"
+  local password_auth="${2:-}"
+  local max_auth="${3:-}"
+  local grace="${4:-}"
+  command_exists sshd || return 0
+  local output actual_root actual_password actual_kbd actual_max actual_grace ok_flag=1
+  output="$(sshd -T 2>/dev/null || true)"
+  actual_root="$(printf '%s\n' "$output" | awk '$1=="permitrootlogin"{print $2; exit}')"
+  actual_password="$(printf '%s\n' "$output" | awk '$1=="passwordauthentication"{print $2; exit}')"
+  actual_kbd="$(printf '%s\n' "$output" | awk '$1=="kbdinteractiveauthentication"{print $2; exit}')"
+  actual_max="$(printf '%s\n' "$output" | awk '$1=="maxauthtries"{print $2; exit}')"
+  actual_grace="$(printf '%s\n' "$output" | awk '$1=="logingracetime"{print $2; exit}')"
+  if [ -n "$root_login" ] && [ "$actual_root" != "$root_login" ]; then
+    warn "PermitRootLogin 未按预期生效：期望 $root_login，实际 ${actual_root:-未知}"
+    ok_flag=0
+  fi
+  if [ -n "$password_auth" ] && [ "$actual_password" != "$password_auth" ]; then
+    warn "PasswordAuthentication 未按预期生效：期望 $password_auth，实际 ${actual_password:-未知}"
+    ok_flag=0
+  fi
+  if [ -n "$password_auth" ] && [ "$actual_kbd" != "$password_auth" ]; then
+    warn "KbdInteractiveAuthentication 未按预期生效：期望 $password_auth，实际 ${actual_kbd:-未知}"
+    ok_flag=0
+  fi
+  if [ -n "$max_auth" ] && [ "$actual_max" != "$max_auth" ]; then
+    warn "MaxAuthTries 未按预期生效：期望 $max_auth，实际 ${actual_max:-未知}"
+    ok_flag=0
+  fi
+  if [ -n "$grace" ] && [ "$actual_grace" != "$grace" ]; then
+    warn "LoginGraceTime 未按预期生效：期望 $grace，实际 ${actual_grace:-未知}"
+    ok_flag=0
+  fi
+  if [ "$ok_flag" -eq 1 ]; then
+    ok "SSH 关键配置已按预期生效。"
+    return 0
+  fi
+  fail "SSH 配置已写入但最终生效值不符合预期，请检查 $SSH_MAIN_CONFIG 中是否有 Match 块或后续重复配置覆盖。"
+  return 1
 }
 
 restart_ssh_safe() {
@@ -1631,7 +1721,12 @@ configure_ssh_login_policy() {
   fi
   ensure_packages openssh-server || return 1
   render_sshd_config "$(get_managed_ports_or_current)" "$root_login" "$password_auth" "$max_auth" "$grace"
-  restart_ssh_safe && add_report "已统一配置 SSH 登录策略：root=$root_login, password=$password_auth, maxauth=$max_auth, grace=$grace"
+  if restart_ssh_safe && verify_sshd_expected_values "$root_login" "$password_auth" "$max_auth" "$grace"; then
+    add_report "已统一配置 SSH 登录策略：root=$root_login, password=$password_auth, maxauth=$max_auth, grace=$grace"
+  else
+    warn "SSH 登录策略可能未完全生效；请不要关闭当前 SSH 连接，建议查看上方 sshd -T 输出。"
+    return 1
+  fi
 }
 
 module_fail2ban() {
@@ -2416,6 +2511,9 @@ module_status() {
   for f in "$SSH_DROPIN_FILE" "$F2B_FILE" "$BBR_FILE"; do
     if [ -e "$f" ]; then say "  存在：$f"; else say "  不存在：$f"; fi
   done
+  if grep -Fxq "$SSHD_BLOCK_BEGIN" "$SSH_MAIN_CONFIG" 2>/dev/null; then
+    say "  存在：$SSH_MAIN_CONFIG 中的 vps-init SSH 管理块"
+  fi
   pause
 }
 
@@ -2437,11 +2535,13 @@ module_restore() {
   read -r c || c=""
   case "$c" in
     1)
-      print_preview "撤销 SSH 加固配置" "无" "$SSH_DROPIN_FILE" "无" "$SSH_SERVICE" "删除脚本 drop-in 后重启 SSH" "只删除脚本配置，不恢复系统原始默认" "会重启 SSH"
+      print_preview "撤销 SSH 加固配置" "无" "$SSH_DROPIN_FILE, $SSH_MAIN_CONFIG 中的脚本管理块" "无" "$SSH_SERVICE" "删除脚本 drop-in 和主配置中的脚本管理块后重启 SSH" "只删除脚本配置，不恢复系统原始默认" "会重启 SSH"
       danger_confirm "删除脚本 SSH 配置并重启 SSH" || return 0
       rm -f "$SSH_DROPIN_FILE"
+      remove_managed_sshd_block "$SSH_MAIN_CONFIG"
       restart_ssh_safe || true
       set_state_value "SSH_MANAGED" "0"
+      set_state_value "SSH_MAIN_BLOCK_MANAGED" "0"
       add_report "已撤销脚本 SSH 加固配置"
       ;;
     2)
