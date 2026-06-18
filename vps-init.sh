@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.10
+# Version: 1.1.11
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.10"
+SCRIPT_VERSION="1.1.11"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -989,7 +989,6 @@ ssh_key_generate_on_vps() {
       rm -f "$key_file" "$key_file.pub"
     fi
     ok "VPS 上的临时私钥已删除。"
-    say "说明：因为已经删除，所以 $key_file 现在不能再 cat，这是正常的。"
   else
     warn "临时私钥仍保留在 $key_file。请尽快保存到本地并手动删除。"
     say "你稍后仍可执行下面命令查看："
