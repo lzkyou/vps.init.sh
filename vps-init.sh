@@ -20,7 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 #
 # VPS 小白友好初始化脚本
-# Version: 1.1.9
+# Version: 1.1.10
 #
 # 设计目标：
 # - 面向 VPS 新手，中文交互，所有重要操作先预览再确认。
@@ -32,7 +32,7 @@ fi
 set -Euo pipefail
 IFS=$' \t\n'
 
-SCRIPT_VERSION="1.1.9"
+SCRIPT_VERSION="1.1.10"
 STATE_VERSION="1"
 
 STATE_DIR="/var/lib/vps-init"
@@ -822,7 +822,9 @@ remove_managed_key_block() {
 authorized_keys_count() {
   local file="$1"
   [ -f "$file" ] || { echo 0; return 0; }
-  grep -Ec '^[[:space:]]*(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$file" 2>/dev/null || echo 0
+  local count
+  count="$(grep -Ec '^[[:space:]]*(ssh-rsa|ssh-ed25519|ecdsa-sha2-|sk-)' "$file" 2>/dev/null || true)"
+  printf '%s\n' "${count:-0}"
 }
 
 has_managed_key_block() {
